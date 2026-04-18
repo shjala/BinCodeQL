@@ -94,6 +94,16 @@ BnDangerousSink("fread",   1, "buffer_overflow").
 BnDangerousSink("fread",   2, "buffer_overflow").
 BnDangerousSink("__memcpy_chk",  2, "buffer_overflow").
 BnDangerousSink("__memmove_chk", 2, "buffer_overflow").
+// libxml2 wrappers
+BnDangerousSink("xmlMalloc",       0, "allocation_size").
+BnDangerousSink("xmlMallocAtomic", 0, "allocation_size").
+BnDangerousSink("xmlMemMalloc",    0, "allocation_size").
+BnDangerousSink("xmlRealloc",      1, "allocation_size").
+BnDangerousSink("xmlMemRealloc",   1, "allocation_size").
+BnDangerousSink("xmlStrncat",      2, "buffer_overflow").
+BnDangerousSink("xmlStrncpy",      2, "buffer_overflow").
+BnDangerousSink("xmlMemcpy",       2, "buffer_overflow").
+BnDangerousSink("xmlMemmove",      2, "buffer_overflow").
 
 // ════════════════════════════════════════════════════════════════════
 // RULE 1: HasUpperBound — variable has a proper upper-bound guard

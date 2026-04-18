@@ -162,6 +162,31 @@ TaintTransfer("png_read_buffer", "return", "external").
 // Decompresses external data — arg3 (output buffer) gets tainted content
 TaintTransfer("png_inflate_read", "arg3", "external").
 
+// ── libxml2 string and allocator wrappers ──────────────────────────
+// xmlStrdup(cur), xmlStrndup(cur, len): return = copy of cur
+TaintTransfer("xmlStrdup",       "return", "arg0").
+TaintTransfer("xmlStrndup",      "return", "arg0").
+TaintTransfer("xmlCharStrdup",   "return", "arg0").
+TaintTransfer("xmlCharStrndup",  "return", "arg0").
+// xmlStrncat(cur, add, len): cur receives add
+TaintTransfer("xmlStrncat",      "arg0", "arg1").
+TaintTransfer("xmlStrncat",      "return", "arg0").
+TaintTransfer("xmlStrcat",       "arg0", "arg1").
+TaintTransfer("xmlStrcat",       "return", "arg0").
+TaintTransfer("xmlStrncatNew",   "return", "arg0").
+TaintTransfer("xmlStrncatNew",   "return", "arg1").
+// xmlStrncpy(cur, src, len)
+TaintTransfer("xmlStrncpy",      "arg0", "arg1").
+TaintTransfer("xmlStrncpy",      "return", "arg0").
+TaintTransfer("xmlStrcpy",       "arg0", "arg1").
+TaintTransfer("xmlStrcpy",       "return", "arg0").
+// xmlMemcpy / xmlMemmove wrappers (when present)
+TaintTransfer("xmlMemcpy",       "arg0", "arg1").
+TaintTransfer("xmlMemmove",      "arg0", "arg1").
+// xmlMalloc / xmlRealloc / xmlCalloc: return pointer; realloc preserves taint
+TaintTransfer("xmlRealloc",      "return", "arg0").
+TaintTransfer("xmlMemRealloc",   "return", "arg0").
+
 // ── Buffer-write sources ─────────────────────────────────────────────
 // Functions that write external data INTO the buffer pointed to by arg_idx.
 // Used by interproc.dl to taint the heap object the buffer points to.

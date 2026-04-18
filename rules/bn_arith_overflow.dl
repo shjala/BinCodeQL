@@ -74,6 +74,16 @@ BnSizeSensitiveSink("__memcpy_chk",  2).
 BnSizeSensitiveSink("__memmove_chk", 2).
 BnSizeSensitiveSink("__builtin_memcpy",  2).
 BnSizeSensitiveSink("__builtin_memmove", 2).
+// libxml2 wrappers
+BnSizeSensitiveSink("xmlMalloc",       0).
+BnSizeSensitiveSink("xmlMallocAtomic", 0).
+BnSizeSensitiveSink("xmlMemMalloc",    0).
+BnSizeSensitiveSink("xmlRealloc",      1).
+BnSizeSensitiveSink("xmlMemRealloc",   1).
+BnSizeSensitiveSink("xmlStrncat",      2).
+BnSizeSensitiveSink("xmlStrncpy",      2).
+BnSizeSensitiveSink("xmlMemcpy",       2).
+BnSizeSensitiveSink("xmlMemmove",      2).
 
 // ── Effective guard for arith: a guard on the arith dst that reaches the
 //    arith address on the CFG (pre-check) or is reachable FROM it (post-check).

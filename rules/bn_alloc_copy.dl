@@ -55,6 +55,12 @@ BnAllocFunc("memalign",     1).
 BnAllocFunc("xmalloc",      0).
 BnAllocFunc("g_malloc",     0).
 BnAllocFunc("g_try_malloc", 0).
+// libxml2 allocator wrappers
+BnAllocFunc("xmlMalloc",       0).
+BnAllocFunc("xmlMallocAtomic", 0).
+BnAllocFunc("xmlMemMalloc",    0).
+BnAllocFunc("xmlRealloc",      1).
+BnAllocFunc("xmlMemRealloc",   1).
 
 // ── Copy signatures: (func, dst_arg_idx, size_arg_idx) ───────────────
 .decl BnCopyFunc(callee: Sym, dst_arg: Idx, size_arg: Idx)
@@ -69,6 +75,11 @@ BnCopyFunc("__strncpy_chk",    0, 2).
 // Compiler-builtin names emitted by BN when libc functions are inlined.
 BnCopyFunc("__builtin_memcpy",  0, 2).
 BnCopyFunc("__builtin_memmove", 0, 2).
+// libxml2 copy wrappers
+BnCopyFunc("xmlStrncat",        0, 2).
+BnCopyFunc("xmlStrncpy",        0, 2).
+BnCopyFunc("xmlMemcpy",         0, 2).
+BnCopyFunc("xmlMemmove",        0, 2).
 
 // ── Unbounded copy signatures (no explicit size arg) ─────────────────
 .decl BnUnboundedCopyFunc(callee: Sym, dst_arg: Idx)
@@ -77,6 +88,9 @@ BnUnboundedCopyFunc("strcat",  0).
 BnUnboundedCopyFunc("sprintf", 0).
 BnUnboundedCopyFunc("__strcpy_chk", 0).
 BnUnboundedCopyFunc("__strcat_chk", 0).
+// libxml2 unbounded copies
+BnUnboundedCopyFunc("xmlStrcpy", 0).
+BnUnboundedCopyFunc("xmlStrcat", 0).
 
 // ════════════════════════════════════════════════════════════════════
 // RULE 1: AllocSite — (buf, size_var) pair at an allocation call
