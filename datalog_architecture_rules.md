@@ -21,6 +21,7 @@ A comprehensive guide to the Souffle Datalog rule system powering BinCodeQL's bi
    - 4.11 [Tainted Integer Vulnerabilities (`inttype_taint.dl`)](#411-tainted-integer-vulnerabilities)
    - 4.12 [BOIL Detection (`boil.dl`)](#412-boil-detection)
    - 4.13 [Tainted BOIL (`boil_taint.dl`)](#413-tainted-boil)
+   - 4.14 [Bn* Rule Set (`bn_*.dl`)](#414-bn-rule-set)
 5. [Guard Detection and False-Positive Suppression](#5-guard-detection-and-false-positive-suppression)
 6. [Two-Pass Pipeline](#6-two-pass-pipeline)
 7. [Rule Composition Map](#7-rule-composition-map)
@@ -110,6 +111,12 @@ Binary (.elf / .pe / .bndb)
 
 **Interactive (MCP):** Uses BN MCP `get_il()` to retrieve MLIL-SSA text, then `mlil_parser.py` applies regex patterns. Good for incremental exploration — extract one function, inspect results, extract more. Accumulates facts with deduplication (append mode). Does not emit StackVar.
 
+### Extractor capabilities in the batch path
+
+- **MemRead decomposition.** `decompose_load_addr()` splits load-address expressions into `(base, offset)` pairs for the `MemRead` fact. Recognizes `var`, `var+const`, `var+var`, and `base+(idx*N)` scaled-index shapes. Previously the `offset` column was hard-coded `"0"`; decomposition unlocks counter-as-index rules that need to match the offset variable, and surfaces struct offsets (e.g. `cur_pic_ptr#70 + 744`).
+- **VarSign from BN type info.** When Binary Ninja has type info (DWARF or user-refined), the extractor emits `VarSign(func, var, ver, sign)` with ground-truth signedness. Stripped binaries produce no `VarSign` facts; downstream rules fall back to the `bn_signed_infer.dl` heuristic (sx/zx Cast kinds + signed-vs-unsigned Guard ops). On the ffmpeg `h264_decode_frame` test this raises signedness coverage from ~3% (heuristic-only) to ~60% (ground-truth + heuristic).
+- **Indirect-call resolution through global function pointers.** `resolve_callee()` handles `MLIL_CALL_SSA` where `dest.operation == MLIL_VAR_SSA` by tracing the var's SSA definition. If the definition is `MLIL_LOAD_SSA` of a `MLIL_CONST_PTR` / `MLIL_CONST` / `MLIL_IMPORT`, the extractor returns the global's symbol name (e.g. `xmlRealloc`) instead of `"<indirect>"`. This unlocks every signature-matching rule on libraries that install allocators/IO as globals (libxml2, glib, SQLite, OpenSSL).
+
 ### Formal parameter detection
 
 Both extractors use the same heuristic: in SSA, version-0 variables that appear in Use facts but have no corresponding Def are formal parameters. They are sorted by minimum use address to assign positional indices (arg0, arg1, ...). The `mem` SSA token (which tracks memory state) is excluded.
@@ -140,7 +147,7 @@ Idx   <: unsigned    — argument/parameter indices
 | **ReturnVal** | func, var, ver | `var#ver` is a return value of `func` |
 | **PhiSource** | func, var, def_ver, src_var, src_ver | Phi node: `var#def_ver = phi(..., src_var#src_ver, ...)` |
 | **FormalParam** | func, var, idx | `var` is the `idx`-th formal parameter of `func` |
-| **MemRead** | func, addr, base, offset, size | Memory load: reads from `base[offset]` with `size` bytes |
+| **MemRead** | func, addr, base, offset, size | Memory load: reads from `base[offset]` with `size` bytes. The extractor decomposes common shapes — `var+const` becomes `(var, const)`, `ptr+idx` becomes `(ptr, idx)` — so the offset column carries either a struct offset or an index variable. Compound expressions fall back to the whole expression as base with offset `"0"` |
 | **MemWrite** | func, addr, target, mem_in, mem_out | Memory store: writes to `target`, memory SSA `mem_in→mem_out` |
 | **FieldRead** | func, addr, base, field | Struct field read: `_ = base.field` |
 | **FieldWrite** | func, addr, base, field, mem_in, mem_out | Struct field write: `base.field = _` |
@@ -152,6 +159,8 @@ Idx   <: unsigned    — argument/parameter indices
 | **ArithOp** | func, addr, dst, dst_ver, op, src, src_ver, operand | Arithmetic: `dst#dst_ver = src#src_ver op operand` |
 | **Cast** | func, addr, dst, dst_ver, src, src_ver, kind, src_width, dst_width | Type cast: `dst = kind(src)` where kind is `"sx"`, `"zx"`, or `"trunc"` |
 | **VarWidth** | func, var, ver, width | Type width of `var#ver` in bytes |
+| **VarSign** | func, var, ver, sign | Ground-truth signedness (`"signed"` / `"unsigned"`) from BN type info. Emitted only when DWARF/type info is present; stripped binaries produce no rows |
+| **CallAddrArg** | call_addr, arg_idx, target | Call arg is `&target` — captures output-parameter patterns (scanf family) |
 
 ### Configuration relations (user/agent-specified)
 
@@ -186,6 +195,21 @@ Idx   <: unsigned    — argument/parameter indices
 | **DoubleFree** | patterns_mem*.dl | Same pointer freed twice |
 | **FreesParam** | patterns_mem_interproc.dl | Function transitively frees its Nth parameter |
 | **FormatStringVuln** | patterns_mem_interproc.dl | Function parameter used as format string |
+| **BnFlow** | bn_flow.dl | Shared intraprocedural Flow transitive closure (pre-computed once, consumed by all Bn* rules) |
+| **BnSignedness** | bn_signed_infer.dl | Resolved signedness: `"signed"` / `"unsigned"` / `"conflict"` / `"unknown"` |
+| **BnLoopIterVar** | bn_counter_oob.dl | Loop-carried variable (phi self-reference in MLIL-SSA) |
+| **BnUnboundedCounter** | bn_counter_oob.dl | `ArithOp("add")` on var with no proper upper-bound guard on any SSA version |
+| **BnTaintedUnboundedCounter** | bn_counter_oob.dl | Loop-carried unbounded counter tainted from attacker input |
+| **BnCounterUsedAsIndex** | bn_counter_oob.dl | Counter flows to `mem_read_use` / `mem_write_use` / `ptr_arith` / `sink_arg` |
+| **BnTaintedCounterAsIndex** | bn_counter_oob.dl | Exploitable tainted counter-as-index (high-severity) |
+| **BnAllocCopyMismatch** | bn_alloc_copy.dl | Allocation size ≠ copy size with taint overlap (CVE-2022-29824 shape) |
+| **BnAllocThenUnboundedCopy** | bn_alloc_copy.dl | `malloc(tainted_size)` then `strcpy`/`strcat`/`sprintf` |
+| **BnUnguardedTaintedSink** | bn_unguarded_sink.dl | `TaintedSink \ GuardedSink` — structural consolidation |
+| **BnTaintedLoopBound** | bn_loop_bound.dl | Tainted loop-continuation predicate (proper op set: `slt`/`sle`/`ult`/`ule`/`ne`) |
+| **BnUnguardedDangerousCast** | bn_unguarded_cast.dl | `trunc` or `sx` cast without CFG-reaching guard on the source |
+| **BnPotentialArithOverflow** | bn_arith_overflow.dl | Narrow (≤4B) signed `add`/`mul`/`lsl` with no guard |
+| **BnTaintedOverflowAtSink** | bn_arith_overflow.dl | Overflowing narrow arith reaching a size-sensitive sink |
+| **BnFinding** | bn_findings.dl | Unified severity-tagged aggregation of all Bn* outputs |
 
 ---
 
@@ -594,6 +618,48 @@ Both direct taint and indirect (tainted var flows to the pointer) are checked.
 
 ---
 
+### 4.14 Bn* Rule Set
+
+**Files:** `bn_flow.dl`, `bn_signed_infer.dl`, `bn_counter_oob.dl`, `bn_alloc_copy.dl`, `bn_unguarded_sink.dl`, `bn_loop_bound.dl`, `bn_unguarded_cast.dl`, `bn_arith_overflow.dl`, `bn_findings.dl`
+
+Ports source-level Datalog analyses (originally developed for the NeuroLog source-code sibling project while chasing the ffmpeg H.264 slice-counter bug) into the MLIL-SSA binary context. Every new relation is `Bn`-prefixed; every new rule file is `bn_*.dl`. No edits to any pre-existing rule file — composition is fully additive.
+
+**Design constraints that shape the port:**
+- `DefReachesUse(f, v, da, ua)` in source form becomes an SSA-version match in MLIL-SSA: `Def(f, v, ver, da)` + `Use(f, v, ver, ua)` with the same `ver`. Transitive cases use `BnFlow` (see below).
+- Canonical C type names (`uint32_t`, `ssize_t`, etc.) do not exist post-compilation. `VarSign` + the `bn_signed_infer.dl` heuristic substitute for NeuroLog's `VarType`.
+- Source "upper-bound" operator set (`<`, `<=`, `lt`, `le`, `unsigned_lt`, `unsigned_le`) maps to the MLIL `slt` / `sle` / `ult` / `ule` set. `eq` / `ne` are NOT upper bounds — this distinction is what correctly flagged the ffmpeg slice counter as unbounded despite a `== sentinel` check.
+
+**`bn_flow.dl` — shared intraprocedural Flow closure.** Computes the transitive Flow relation (`Def`+`Use` at same address; `PhiSource`; identity) once per binary and emits it as `BnFlow.facts` for downstream consumption. Pre-computing the closure in a single pass eliminates ~200× redundant work in the counter/alloc-copy rules (measured: `bn_counter_oob.dl` 6m36s → 1.86s on ffmpeg `h264_decode_frame`).
+
+**`bn_signed_infer.dl` — signedness resolution.** Consumes `VarSign` (ground truth from BN type system) as strongest evidence; falls back to heuristic evidence from `sx`/`zx` Cast kinds and signed/unsigned Guard operators (`slt`/`sle`/`sgt`/`sge` → signed, `ult`/`ule`/`ugt`/`uge` → unsigned). `BnSignedness(f, v, ver, sign)` resolves to `"signed"` / `"unsigned"` / `"conflict"` (both signals present) / `"unknown"` (no evidence). Downstream rules consume only `"signed"` — never `"conflict"` or `"unknown"` — to bias toward precision.
+
+**`bn_counter_oob.dl` — unbounded counter & counter-as-index.** Four rules:
+- `BnHasUpperBound(f, v, ver)`: proper upper-bound ops (`slt`/`sle`/`ult`/`ule`), Flow-lifted so a guard on one SSA version covers all connected versions.
+- `BnUnboundedCounter(f, v, ver, incr_addr)`: `ArithOp("add", v, ver, ...)` with no `BnHasUpperBound` on any SSA-connected version.
+- `BnCounterUsedAsIndex(f, v, ver, incr_addr, use_addr, kind)`: the counter (or a Flow-successor) used at a `MemRead`, `MemWrite`, pointer `add`, or size-sensitive sink arg. **Gated on `BnLoopIterVar(f, v)`** — only loop-carried counters fire, which suppresses straight-line `add`-without-guard false positives from register-named temporaries.
+- `BnTaintedUnboundedCounter` / `BnTaintedCounterAsIndex`: same, additionally requiring `TaintedVar` from `interproc.dl`.
+
+**`bn_alloc_copy.dl` — alloc/copy size mismatch.** Derives allocation sites (`BnAllocSite` for `malloc`/`calloc`/`realloc`/`xmlMalloc`/...) and copy sites (`BnCopySite` for `memcpy`/`xmlStrncat`/`__builtin_memcpy`/...). Emits:
+- `BnAllocCopyMismatch` with pattern = `"both_tainted_diff"` (both sizes tainted, different vars) or `"untainted_alloc_tainted_copy"` (attacker controls copy length but not alloc size — direct overflow).
+- `BnAllocThenUnboundedCopy`: `malloc(tainted_size)` followed by `strcpy` / `strcat` / `sprintf` on the allocated buffer.
+
+**`bn_unguarded_sink.dl`** — one-rule structural consolidation: `BnUnguardedTaintedSink = TaintedSink \ GuardedSink`. Gives triage consumers a single actionable relation instead of subtracting manually.
+
+**`bn_loop_bound.dl`** — `BnTaintedLoopBound` fires on guards with op ∈ {`slt`, `sle`, `ult`, `ule`, `ne`} where either (a) the bound variable is tainted, (b) the loop variable is tainted, or (c) the loop variable flows from a tainted SSA version. Refines `boil.dl`'s structural BOIL detection without modifying that file.
+
+**`bn_unguarded_cast.dl`** — detects absence-of-guard, complementing `inttype.dl GuardedIntIssue` which detects presence-of-guard. `BnCFGReach` computes CFG reachability. `BnGuardedBeforeCast` fires for a direct guard on the cast's SSA-version source or a Flow-connected predecessor that CFG-reaches the cast. `BnUnguardedDangerousCast` fires for `trunc` (src_width > dst_width) or `sx` casts where no such guard exists. This is the CVE-2022-29824 shape — sign-extend of a narrow `int` to `size_t` without a prior non-negativity check.
+
+**`bn_arith_overflow.dl`** — detects narrow signed arithmetic that can overflow before reaching a size-sensitive sink. Three rules:
+- `BnPotentialArithOverflow`: `ArithOp` with op ∈ {`add`, `mul`, `lsl`}, `VarWidth` ≤ 4 bytes, `BnSignedness = "signed"`, and no `BnEffectiveGuardForArith` (guard on the arith destination that CFG-reaches the arith address or is CFG-reachable from it).
+- `BnOverflowAtSink`: overflowing arith flows (via `BnFlow`) to a size-sensitive sink arg.
+- `BnTaintedOverflowAtSink`: same, additionally tainted (direct on arith dst or indirect via a tainted source operand).
+
+**`bn_findings.dl` — unified aggregation.** `BnFinding(func, addr, severity, category, var, detail)` unions all Bn* outputs with a consistent shape. Severity is `"high"` for exploitable shapes (tainted counter-as-index, alloc-copy mismatch, unguarded tainted sink, tainted overflow-at-sink) or `"medium"` for structural/triage signals (tainted loop bound, unguarded cast, unbounded counter without taint). Primary relation for downstream reporting.
+
+**Pipeline dependencies.** The Bn* rules consume outputs from `interproc.dl` (`TaintedVar`, `TaintedSink`, `GuardedSink`) and from each other (`BnFlow`, `BnSignedness`, all Bn* outputs for `bn_findings.dl`). The agent driver `tool_run_bn_extra_rules()` runs the nine passes in the order listed above with automatic inter-pass CSV → facts staging.
+
+---
+
 ## 5. Guard Detection and False-Positive Suppression
 
 Guards are comparison operators in conditional branches extracted as facts. They are critical for reducing false positives — a vulnerability pattern protected by a sufficient bounds check may not be exploitable.
@@ -656,6 +722,24 @@ Pass 2: souffle rules/interproc.dl -F facts/ -D output/
 - Testing alias rules in isolation
 - Avoiding the compilation cost of a single massive rule file
 
+### Extended Bn* pipeline
+
+After the two-pass taint pipeline, `tool_run_bn_extra_rules()` runs a nine-pass Bn* sequence with automatic inter-pass CSV → facts staging:
+
+```
+ 1. bn_flow.dl          → BnFlow.csv           → facts/BnFlow.facts
+ 2. bn_signed_infer.dl  → BnSignedness.csv     → facts/BnSignedness.facts
+ 3. bn_counter_oob.dl   → 5 outputs            → staged for bn_findings
+ 4. bn_alloc_copy.dl    → 4 outputs            → staged for bn_findings
+ 5. bn_unguarded_sink.dl (consumes TaintedSink, GuardedSink — pre-staged from interproc)
+ 6. bn_loop_bound.dl
+ 7. bn_unguarded_cast.dl
+ 8. bn_arith_overflow.dl
+ 9. bn_findings.dl       → BnFinding.csv (unified aggregation)
+```
+
+TaintedVar is auto-staged from the preceding taint pipeline's output; an empty placeholder is created if that pipeline has not run, in which case only the non-tainted Bn* variants fire.
+
 ---
 
 ## 7. Rule Composition Map
@@ -710,8 +794,31 @@ How analyses build on each other:
 
 **Two categories of analyses:**
 
-1. **Taint-dependent** (require prior interproc.dl run): `inttype_taint.dl`, `boil_taint.dl`
-2. **Standalone** (run directly on extracted facts): `inttype.dl`, `boil.dl`, `patterns.dl`, `patterns_mem.dl`, `patterns_mem_interproc.dl`, `core.dl`, `summary.dl`
+1. **Taint-dependent** (require prior interproc.dl run): `inttype_taint.dl`, `boil_taint.dl`, `bn_counter_oob.dl`, `bn_alloc_copy.dl`, `bn_unguarded_sink.dl`, `bn_loop_bound.dl`, `bn_arith_overflow.dl`
+2. **Standalone** (run directly on extracted facts): `inttype.dl`, `boil.dl`, `patterns.dl`, `patterns_mem.dl`, `patterns_mem_interproc.dl`, `core.dl`, `summary.dl`, `bn_flow.dl`, `bn_signed_infer.dl`, `bn_unguarded_cast.dl`
+
+**Bn* rule set composition:**
+
+```
+     ┌─────────────┐   ┌──────────────────┐
+     │ bn_flow.dl  │   │ bn_signed_infer  │
+     │ BnFlow      │   │ BnSignedness     │
+     └──────┬──────┘   └─────┬────────────┘
+            │                │
+            ▼ (staged as .facts)
+┌─────────────────────────────────────────────────┐
+│  bn_counter_oob   bn_alloc_copy   bn_loop_bound │
+│  bn_unguarded_cast  bn_arith_overflow           │
+│  bn_unguarded_sink (TaintedSink \ GuardedSink)  │
+└───────────────────────┬─────────────────────────┘
+                        ▼
+                ┌─────────────────┐
+                │ bn_findings.dl  │
+                │ BnFinding       │
+                └─────────────────┘
+```
+
+The shared `BnFlow` closure is the key perf optimization — re-deriving it inline in each rule file was a 3-minute-per-rule cost on large functions. Factoring it into a pre-computation pass is one-time and downstream consumers stay fast.
 
 ---
 
@@ -811,6 +918,44 @@ The `bound_type` field (`"const"` / `"var"` / `"expr"`) enables reasoning about 
 - `Guard(f, addr, len, 0, "sle", "r15_2", "var")` — the bound is a variable; its value depends on context (could be 10MB, could be 1GB, could be user-controlled)
 
 This distinction was added after analyzing libxml2, where guards with computed bounds (like the 1GB limit derived from `XML_PARSE_HUGE` flag processing) blocked exploitation but couldn't be evaluated without understanding the variable's value range.
+
+### Loop-carried-variable FP filter on counter rules
+
+`BnCounterUsedAsIndex` and `BnTaintedUnboundedCounter` are gated on `BnLoopIterVar(f, v)` — a variable with a phi self-reference in MLIL-SSA (i.e., a value that flows back to itself across a phi node, the canonical loop-carry signal).
+
+**Why:** The raw "`ArithOp("add")` without upper-bound guard" condition over-approximates wildly on straight-line code. `p = q + 1` with no subsequent check is flagged as an unbounded counter even though it's not a loop counter at all. On ffmpeg `h264_decode_frame`, 6 of 23 tainted counters (~26%) were straight-line register-named temporaries; filtering them out reduced counter-as-index findings by ~30% without dropping any genuine loop-carried counter (including the DWARF-named `nal` NAL-unit pointer).
+
+**Precision vs. recall tradeoff:** The filter trusts MLIL-SSA phi structure as ground truth for "in a loop". If the compiler unrolled a loop entirely (no phi) or emitted a goto-based loop that MLIL couldn't structure, the filter misses. In practice, this is a rare edge case and the FP reduction is worth it. The raw `BnUnboundedCounter` relation is still output for audit; only the index/tainted variants are filtered.
+
+### Signedness inference: heuristic with ground-truth override
+
+`BnSignedness` resolves four outcomes: `"signed"` / `"unsigned"` / `"conflict"` / `"unknown"`. The inference evidence order is:
+1. **`VarSign` (ground truth).** Extractor emits `VarSign(func, var, ver, sign)` from Binary Ninja's type system when DWARF or user-refined types are present. Strongest evidence.
+2. **Cast kind.** `Cast(..., "sx", ...)` on a variable is strong evidence of signed intent; `Cast(..., "zx", ...)` is strong evidence of unsigned intent.
+3. **Guard operator.** `Guard(..., "slt"/"sle"/"sgt"/"sge", ...)` is signed-comparison evidence; `Guard(..., "ult"/"ule"/"ugt"/"uge", ...)` is unsigned-comparison evidence.
+
+A variable with evidence from BOTH sides resolves to `"conflict"`. Downstream rules (`bn_arith_overflow.dl` especially) consume ONLY `"signed"` — never `"conflict"` or `"unknown"` — to bias toward precision. `BnSignedness` coverage on ffmpeg `h264_decode_frame` is ~60% of variables with ground-truth `VarSign` present, vs ~3% with heuristic alone. On stripped binaries without type info, only the heuristic fires.
+
+### Indirect-call resolution through global function-pointer loads
+
+Libraries often install allocators, I/O, and logging as globals:
+
+```c
+xmlMallocFunc  xmlMalloc  = malloc;
+xmlReallocFunc xmlRealloc = realloc;
+xmlFreeFunc    xmlFree    = free;
+```
+
+At binary level, `xmlRealloc(cur, size)` compiles to:
+
+```
+  rcx = [addr_of_xmlRealloc_global]    // MLIL_LOAD_SSA(MLIL_IMPORT)
+  call rcx                              // MLIL_CALL_SSA(dest=MLIL_VAR_SSA)
+```
+
+Without resolution, BN's `resolve_callee` returned `"<indirect>"`, and every signature-matching rule (`TaintTransfer`, `BnAllocFunc`, `BnCopyFunc`, `BnDangerousSink`) silently missed the call. On the 4-function libxml2 test, 24 of 68 calls were `<indirect>` and `BnAllocCopyMismatch` fired 0 times despite the code containing the exact CVE-2022-29824 shape.
+
+**Fix:** the extractor traces `MLIL_VAR_SSA` call targets back to their SSA definition. When the definition is `MLIL_LOAD_SSA` of an `MLIL_CONST_PTR` / `MLIL_CONST` / `MLIL_IMPORT`, the extractor looks up the global's symbol name via `bv.get_symbol_at(global_addr).name` and emits that as the callee. Result on the same libxml2 test: 24 indirect calls → 2, `xmlRealloc` / `xmlMallocAtomic` / `xmlFree` all resolve correctly, and `BnAllocCopyMismatch` fires 5 times including the `xmlStrncat` CVE-2022-29824 shape as a single unified relation. Zero rule-side changes were required — resolution is purely extractor-side.
 
 ---
 
