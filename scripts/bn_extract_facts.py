@@ -75,7 +75,7 @@ class FactCollector:
         "Guard.facts", "Jump.facts", "MemRead.facts", "MemWrite.facts",
         "PhiSource.facts", "PointsTo.facts", "ReturnVal.facts",
         "StackVar.facts", "TaintKill.facts", "TaintSourceFunc.facts",
-        "TaintTransfer.facts", "Use.facts", "VarWidth.facts",
+        "TaintTransfer.facts", "Use.facts", "VarSign.facts", "VarWidth.facts",
     ]
 
     def write_all(self, output_dir: Path):
@@ -123,6 +123,95 @@ def ssa_var_version(var):
 def ssa_str(var):
     """Return 'name' for an SSA var."""
     return ssa_var_name(var)
+
+
+def decompose_load_addr(expr):
+    """Split a load-address expression into (base, offset) strings.
+
+    Recognizes the common shapes:
+      - MLIL_VAR_SSA(v)                 → ("v#k",   "0")
+      - MLIL_ADD(var, const)            → ("v#k",   "<const>")
+      - MLIL_ADD(var_a, var_b)          → ("va#i",  "vb#j")
+      - MLIL_ADD(ptr, MLIL_MUL(idx, N)) → ("ptr#k", "idx#j")     (scaled index)
+      - MLIL_CONST_PTR                  → ("<const_ptr>", "0")
+    Falls back to (str(expr), "0") otherwise. The output is used purely as
+    string identifiers for Datalog joins — Use facts on the same addr already
+    exist independently, so under-decomposition never loses a Use, it only
+    reduces offset-column precision.
+    """
+    if expr is None:
+        return ("", "0")
+    op = expr.operation
+
+    def var_str(v):
+        name = ssa_var_name(v.src) if op_of(v) == MLIL.MLIL_VAR_SSA else None
+        ver = ssa_var_version(v.src) if op_of(v) == MLIL.MLIL_VAR_SSA else None
+        return f"{name}#{ver}" if name is not None else None
+
+    def op_of(v):
+        return v.operation if v is not None else None
+
+    # Simple variable load
+    if op == MLIL.MLIL_VAR_SSA:
+        name = ssa_var_name(expr.src)
+        ver = ssa_var_version(expr.src)
+        return (f"{name}#{ver}", "0")
+
+    # base + offset
+    if op == MLIL.MLIL_ADD:
+        left = expr.left
+        right = expr.right
+        lop = op_of(left)
+        rop = op_of(right)
+
+        # var + const
+        if lop == MLIL.MLIL_VAR_SSA and rop in (MLIL.MLIL_CONST, MLIL.MLIL_CONST_PTR):
+            vs = var_str(left)
+            if vs:
+                return (vs, str(right.constant))
+        if rop == MLIL.MLIL_VAR_SSA and lop in (MLIL.MLIL_CONST, MLIL.MLIL_CONST_PTR):
+            vs = var_str(right)
+            if vs:
+                return (vs, str(left.constant))
+
+        # var + var  (heuristic: the pointer-like operand is the "base")
+        if lop == MLIL.MLIL_VAR_SSA and rop == MLIL.MLIL_VAR_SSA:
+            return (var_str(left) or str(left), var_str(right) or str(right))
+
+        # var + (var * N)  — scaled-index pattern; treat the multiplicand as offset
+        if lop == MLIL.MLIL_VAR_SSA and rop == MLIL.MLIL_MUL:
+            inner = right.left if op_of(right.left) == MLIL.MLIL_VAR_SSA else right.right
+            if op_of(inner) == MLIL.MLIL_VAR_SSA:
+                return (var_str(left) or str(left), var_str(inner) or str(inner))
+        if rop == MLIL.MLIL_VAR_SSA and lop == MLIL.MLIL_MUL:
+            inner = left.left if op_of(left.left) == MLIL.MLIL_VAR_SSA else left.right
+            if op_of(inner) == MLIL.MLIL_VAR_SSA:
+                return (var_str(right) or str(right), var_str(inner) or str(inner))
+
+    if op in (MLIL.MLIL_CONST, MLIL.MLIL_CONST_PTR):
+        return (str(expr.constant), "0")
+
+    # Fallback — keep the whole expression as base.
+    return (str(expr), "0")
+
+
+def emit_var_sign(fc, func_name, var_obj, name, ver):
+    """Emit a VarSign fact when BN's type system indicates signedness.
+
+    Ground truth for signedness when DWARF/type info is present — superior
+    to the bn_signed_infer.dl heuristic. Missing type info (stripped binaries)
+    → no fact emitted, downstream falls back to the heuristic.
+    """
+    try:
+        t = var_obj.var.type
+        sign_str = None
+        # BN's integer types expose a .signed attribute
+        if hasattr(t, 'signed'):
+            sign_str = "signed" if t.signed else "unsigned"
+        if sign_str:
+            fc.add("VarSign", func_name, name, ver, sign_str)
+    except (AttributeError, TypeError):
+        pass
 
 
 # ── Expression walkers ────────────────────────────────────────────────────────
@@ -333,10 +422,14 @@ def extract_function_facts(bv, func, fc, verbose=False):
                 except (AttributeError, TypeError):
                     pass
 
+            # Emit VarSign when BN type info carries signedness
+            emit_var_sign(fc, func_name, dst, name, ver)
+
             # Check for memory read: var = [expr].size
             if src.operation == MLIL.MLIL_LOAD_SSA:
                 load_src = src.src
-                fc.add("MemRead", func_name, addr, str(load_src), "0", str(src.size))
+                base, offset = decompose_load_addr(load_src)
+                fc.add("MemRead", func_name, addr, base, offset, str(src.size))
                 fc.add("Use", func_name, "mem", ssa_var_version(src.src_memory), addr)
 
             # Collect uses from RHS
@@ -369,6 +462,7 @@ def extract_function_facts(bv, func, fc, verbose=False):
                 fc.add("VarWidth", func_name, name, ver, dst.var.type.width)
             except (AttributeError, TypeError):
                 pass
+            emit_var_sign(fc, func_name, dst, name, ver)
 
             for src in insn.src:
                 src_name = ssa_var_name(src)
@@ -397,6 +491,7 @@ def extract_function_facts(bv, func, fc, verbose=False):
                            out_var.var.type.width)
                 except (AttributeError, TypeError):
                     pass
+                emit_var_sign(fc, func_name, out_var, out_name, out_ver)
 
             # Memory SSA
             mem_out = insn.output_dest_memory

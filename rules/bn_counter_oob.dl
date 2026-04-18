@@ -59,6 +59,23 @@
 .decl BnFlow(func: Sym, src_var: Sym, src_ver: Ver, dst_var: Sym, dst_ver: Ver)
 .input BnFlow
 
+// ════════════════════════════════════════════════════════════════════
+// FP tuning: loop-carried-variable filter
+// ════════════════════════════════════════════════════════════════════
+// Raw `ArithOp("add") without upper bound` over-approximates wildly on
+// straight-line code (e.g., `p = q + 1` with no subsequent check). An
+// unbounded-counter bug is almost always a loop-carried iteration value.
+// We gate index/tainted variants below on BnLoopIterVar — a phi
+// self-reference in MLIL-SSA, which reliably identifies loop-carried vars.
+
+.decl BnLoopIterVar(func: Sym, var: Sym)
+BnLoopIterVar(f, v) :-
+    PhiSource(f, v, pv, v, uv),
+    pv != uv,
+    v != "mem".
+
+.output BnLoopIterVar
+
 // ── Dangerous sinks (size-sensitive arg positions) ───────────────────
 .decl BnDangerousSink(func: Sym, arg_idx: Idx, risk: Sym)
 BnDangerousSink("malloc",  0, "allocation_size").
@@ -147,9 +164,15 @@ BnUnboundedCounter(f, v, ver, ia) :-
 .decl BnCounterUsedAsIndex(func: Sym, var: Sym, ver: Ver,
                            incr_addr: Addr, use_addr: Addr, kind: Sym)
 
+// All arms are gated on BnLoopIterVar(f, v) — the counter must be a
+// loop-carried variable. This cuts FPs from straight-line arithmetic
+// without over-approximating: genuine unbounded-counter bugs live in
+// loops, and MLIL-SSA phi self-reference reliably detects them.
+
 // mem_read_use: Use of counter (via Flow) at a MemRead address
 BnCounterUsedAsIndex(f, v, ver, ia, ua, "mem_read_use") :-
     BnUnboundedCounter(f, v, ver, ia),
+    BnLoopIterVar(f, v),
     BnFlow(f, v, ver, uv, uver),
     Use(f, uv, uver, ua),
     MemRead(f, ua, _, _, _).
@@ -157,6 +180,7 @@ BnCounterUsedAsIndex(f, v, ver, ia, ua, "mem_read_use") :-
 // mem_write_use
 BnCounterUsedAsIndex(f, v, ver, ia, ua, "mem_write_use") :-
     BnUnboundedCounter(f, v, ver, ia),
+    BnLoopIterVar(f, v),
     BnFlow(f, v, ver, uv, uver),
     Use(f, uv, uver, ua),
     MemWrite(f, ua, _, _, _).
@@ -164,12 +188,14 @@ BnCounterUsedAsIndex(f, v, ver, ia, ua, "mem_write_use") :-
 // ptr_arith: counter flows to an ArithOp "add" as either src or operand
 BnCounterUsedAsIndex(f, v, ver, ia, ua, "ptr_arith") :-
     BnUnboundedCounter(f, v, ver, ia),
+    BnLoopIterVar(f, v),
     BnFlow(f, v, ver, uv, uver),
     ArithOp(f, ua, _, _, "add", uv, uver, _).
 
 // sink_arg: counter appears at the argument slot of a dangerous sink
 BnCounterUsedAsIndex(f, v, ver, ia, ua, "sink_arg") :-
     BnUnboundedCounter(f, v, ver, ia),
+    BnLoopIterVar(f, v),
     BnFlow(f, v, ver, uv, uver),
     Call(f, callee, ua),
     ActualArg(ua, idx, _, uv, uver),
@@ -187,12 +213,14 @@ BnCounterUsedAsIndex(f, v, ver, ia, ua, "sink_arg") :-
 
 BnTaintedUnboundedCounter(f, v, ver, ia, origin) :-
     BnUnboundedCounter(f, v, ver, ia),
+    BnLoopIterVar(f, v),
     TaintedVar(f, v, ver, origin, _).
 
 // Also fire when any SSA-related version is tainted (the counter lineage
 // includes a tainted source).
 BnTaintedUnboundedCounter(f, v, ver, ia, origin) :-
     BnUnboundedCounter(f, v, ver, ia),
+    BnLoopIterVar(f, v),
     BnFlow(f, tv, tver, v, ver),
     TaintedVar(f, tv, tver, origin, _).
 

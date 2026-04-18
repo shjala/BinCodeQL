@@ -29,9 +29,20 @@
 .decl VarWidth(func: Sym, var: Sym, ver: Ver, width: unsigned)
 .input VarWidth
 
+// VarSign (ground truth from BN type info). Empty for stripped binaries —
+// then the heuristic below takes over.
+.decl VarSign(func: Sym, var: Sym, ver: Ver, sign: Sym)
+.input VarSign
+
 // ── Raw evidence ─────────────────────────────────────────────────────
 .decl BnInferredSigned(func: Sym, var: Sym, ver: Ver, evidence: Sym)
 .decl BnInferredUnsigned(func: Sym, var: Sym, ver: Ver, evidence: Sym)
+
+// Ground-truth evidence from BN type info (strongest signal).
+BnInferredSigned(f, v, ver, "type_signed") :-
+    VarSign(f, v, ver, "signed").
+BnInferredUnsigned(f, v, ver, "type_unsigned") :-
+    VarSign(f, v, ver, "unsigned").
 
 // sx cast source: inner value was interpreted as signed
 BnInferredSigned(f, v, ver, "cast_sx_src") :-

@@ -96,6 +96,13 @@
 .decl VarWidth(func: Sym, var: Sym, ver: Ver, width: unsigned)
 .input VarWidth
 
+// VarSign: ground-truth signedness from Binary Ninja's type system.
+// Only emitted when DWARF/type info is available; stripped binaries produce
+// no VarSign facts, and bn_signed_infer.dl falls back to its heuristic.
+// sign ∈ {"signed", "unsigned"}.
+.decl VarSign(func: Sym, var: Sym, ver: Ver, sign: Sym)
+.input VarSign
+
 // ── Derived fact (from alias.dl pass) ───────────────────────────────
 .decl PointsTo(func: Sym, var: Sym, ver: Ver, obj: Sym)
 .input PointsTo
