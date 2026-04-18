@@ -802,9 +802,16 @@ def tool_run_bn_extra_rules(
     odir = Path(output_dir) if output_dir else OUTPUT_DIR
     odir.mkdir(parents=True, exist_ok=True)
 
-    # Ensure TaintedVar.facts exists (empty is acceptable — non-tainted variants still fire)
+    # Auto-stage TaintedVar from the taint-pipeline output if present — saves
+    # the caller from remembering the manual cp step between the two pipelines.
+    # If no TaintedVar.csv exists yet (user hasn't run the taint pipeline),
+    # create an empty placeholder so the Bn* rules still run (non-tainted
+    # variants still produce output).
+    tv_csv = odir / "TaintedVar.csv"
     tv_facts = fdir / "TaintedVar.facts"
-    if not tv_facts.exists():
+    if tv_csv.exists():
+        tv_facts.write_text(tv_csv.read_text())
+    elif not tv_facts.exists():
         tv_facts.touch()
 
     results: dict = {"passes": {}, "outputs": {}}
@@ -991,6 +998,31 @@ over facts extracted from Binary Ninja's MLIL-SSA intermediate representation.
 | UncheckedMalloc | func, call_addr, var | malloc/calloc/realloc return used without NULL check |
 | FormatStringVuln | func, call_addr, callee, fmt_var | Function param used as format string |
 
+### Derived output relations (from the Bn* rule set)
+
+| Relation | Columns | Description |
+|----------|---------|-------------|
+| BnSignedness | func, var, ver, sign | Resolved signedness: "signed"/"unsigned"/"conflict"/"unknown" |
+| BnFlow | func, src_var, src_ver, dst_var, dst_ver | Shared transitive Flow closure (consumed by downstream rules) |
+| BnLoopIterVar | func, var | Loop-carried variables (phi self-reference) |
+| BnHasUpperBound | func, var, ver | Variable has a proper upper-bound guard (slt/sle/ult/ule, Flow-lifted) |
+| BnUnboundedCounter | func, var, ver, incr_addr | `add` op with no upper-bound guard on any SSA version |
+| BnTaintedUnboundedCounter | func, var, ver, incr_addr, origin | Loop-carried unbounded counter tainted from attacker input |
+| BnCounterUsedAsIndex | func, var, ver, incr_addr, use_addr, kind | Counter flows to mem_read_use / mem_write_use / ptr_arith / sink_arg |
+| BnTaintedCounterAsIndex | func, var, ver, incr_addr, use_addr, kind, origin | Exploitable tainted counter-as-index |
+| BnAllocSite / BnCopySite | — | Allocation / copy call pairs for mismatch detection |
+| BnAllocCopyMismatch | func, alloc_addr, copy_addr, buf, alloc_size, copy_size, alloc_func, copy_func, pattern, a_origin, c_origin | Alloc size ≠ copy size (both tainted or tainted-copy with untainted-alloc) |
+| BnAllocThenUnboundedCopy | func, alloc_addr, copy_addr, buf, alloc_size, alloc_func, copy_func, origin | malloc(tainted-size) → strcpy/strcat/sprintf |
+| BnUnguardedTaintedSink | caller, callee, call_addr, arg_idx, tainted_var, risk, origin | `TaintedSink \\ GuardedSink` |
+| BnTaintedLoopBound | func, guard_addr, loop_var, loop_ver, bound_var, bound_ver, op, origin, taint_side | Tainted loop-continuation predicate ({slt,sle,ult,ule,ne}) |
+| BnUnguardedDangerousCast | func, cast_addr, src, src_ver, dst, dst_ver, kind, src_width, dst_width | trunc/sx without CFG-reaching guard on the source |
+| BnPotentialArithOverflow | func, addr, var, ver, op, width | Narrow (≤4B) signed add/mul/lsl with no guard |
+| BnOverflowAtSink | func, arith_addr, sink_addr, var, callee, arg_idx | Narrow-signed arith flows to size-sensitive sink |
+| BnTaintedOverflowAtSink | func, arith_addr, sink_addr, var, callee, arg_idx, origin | Exploitable narrow-signed overflow |
+| BnFinding | func, addr, severity, category, var, detail | Unified aggregation — primary output for reporting |
+
+Severity levels in `BnFinding`: `high` (exploitable shape — tainted counter-as-index, alloc-copy mismatch, unguarded tainted sink, tainted overflow-at-sink), `medium` (structural — tainted loop bound, unguarded cast, unbounded counter without taint).
+
 ### Derived output relations (from patterns_mem_interproc.dl)
 
 | Relation | Columns | Description |
@@ -1007,28 +1039,94 @@ over facts extracted from Binary Ninja's MLIL-SSA intermediate representation.
 
 ## Workflow for analyzing a binary
 
-### Recommended: Batch extraction (headless BN)
-1. **Clean workspace** — Call `tool_clean_workspace` to remove stale facts/output.
-2. **Batch extract** — Call `tool_extract_facts_batch` with the binary path and function
-   names (or `extract_all=True`). This runs a headless BN subprocess that walks MLIL-SSA
-   objects directly, emitting all facts including StackVar and Guard. No MCP round-trips
-   needed. Callees are auto-resolved. Requires BN_PYTHON or BN_PYTHON_PATH env var.
-   **Prefer .bndb** when available — it loads in milliseconds vs seconds/minutes
-   for raw binaries, and includes user-refined analysis (renamed functions,
-   custom types, annotations). The script auto-detects .bndb siblings.
-3. **Generate annotations** — Call `tool_generate_annotations` to create DangerousSink.facts
-   and TaintSourceFunc.facts. Add binary-specific sources/sinks via extra args.
-4. **Generate signatures** — Call `tool_generate_signatures` to create TaintTransfer.facts,
-   BufferWriteSource.facts, and TaintKill.facts.
-5. **Run taint pipeline** — Call `tool_run_taint_pipeline` for the full two-pass analysis:
-   - Pass 1: alias.dl → computes PointsTo facts
-   - Pass 2: interproc.dl → 1-CFA context-sensitive interprocedural taint with
-     alias-enhanced pointer tracking, sanitizer kill, and guard detection.
-   This handles buffer-write sources (fread, read, recv) that taint heap objects,
-   not just pointer variables. Also run `patterns.dl` separately for structural patterns.
-6. **Interpret results** — Read output CSVs and explain findings to the user.
-   Key output relations: TaintedVar, TaintedSink, TaintedHeapObject, TaintedBuffer.
-   Check SanitizedVar for false-positive suppression, GuardedSink for triage.
+### Recommended end-to-end pipeline (Bn* rule set)
+
+Run the following tools in order. Each step is self-contained — do NOT
+invent your own shell invocations; use the provided tools.
+
+**1. Clean workspace** — `tool_clean_workspace` removes stale facts/output.
+
+**2. Pick target functions.** Use `search_functions_by_name`, `list_exports`,
+or `list_imports` to find candidates. For a vuln-discovery task without a
+specific target, prefer exported attack-surface functions (parsers,
+decoders, I/O wrappers) that transitively reach dangerous sinks.
+
+**3. Batch extract** — `tool_extract_facts_batch(binary_path, function_names=[...])`.
+Headless BN subprocess; auto-resolves direct and global-pointer-mediated
+indirect calls (xmlMalloc-style libraries); emits all facts including
+Cast, VarWidth, VarSign (from DWARF when present), StackVar, Guard,
+CallAddrArg, and decomposed MemRead offsets.
+Prefer `.bndb` sidecar — it loads in ms and preserves user type refinements.
+Requires `BN_PYTHON` or `BN_PYTHON_PATH` env.
+
+**4. Generate signatures** — `tool_generate_signatures()` writes
+TaintTransfer.facts / BufferWriteSource.facts / TaintKill.facts from
+`rules/signatures.dl`. Must be rerun whenever that rule file changes.
+
+**5. Generate annotations** — `tool_generate_annotations(facts_dir=...)`
+writes DangerousSink.facts and TaintSourceFunc.facts from built-in
+catalogs. Pass `extra_sinks`/`extra_sources` for binary-specific entries.
+
+**6. Set entry taint** — `tool_set_entry_taint(entries=[...])` marks
+function parameters as attacker-controlled. REQUIRED for libraries that
+do not themselves call `read`/`recv`/etc. — without entry taint, the
+tainted variants of every Bn* rule fire 0 times.
+
+**Entry-taint heuristic when the user doesn't specify params:** look at
+the target function's signature via `decompile_function` or type info, then:
+  - Mark every `const char *` / `const xmlChar *` / `const uint8_t *` /
+    `void *` pointer parameter that represents external data (skip
+    parser-context structs like `xmlParserCtxtPtr` unless that's the
+    only input).
+  - Mark every `int` / `size_t` / `ssize_t` length parameter.
+  - Skip output parameters (e.g., `out`, `result`), file descriptors,
+    and function-pointer callbacks.
+  - If the target is an event/SAX callback, taint the data arg and len.
+
+Examples:
+  - `xmlStrndup(const xmlChar *cur, int len)` → taint arg 0 (cur), arg 1 (len)
+  - `parse_tlv(ctx, uint8_t *buf, size_t len)` → taint arg 1 (buf), arg 2 (len)
+  - `png_read_row(png_structrp png_ptr, uint8_t *row, uint8_t *display)` →
+    taint arg 0 (png_ptr — holds I/O state) only
+
+**7. Run the taint pipeline** — `tool_run_taint_pipeline()`.
+Two passes: alias.dl → interproc.dl. Produces PointsTo, TaintedVar,
+TaintedSink, TaintedHeapObject, TaintedBuffer, SanitizedVar, GuardedSink.
+PointsTo and TaintedVar are auto-staged for the next pipeline — no
+manual copy needed.
+
+**8. Run the Bn* extra-rule pipeline** — `tool_run_bn_extra_rules()`.
+Nine passes with automatic inter-pass fact staging:
+  1. bn_flow.dl           — shared transitive-closure Flow (perf)
+  2. bn_signed_infer.dl   — signedness (VarSign ground truth + heuristic)
+  3. bn_counter_oob.dl    — unbounded counter / counter-as-index
+                            (gated on loop-carried phi self-reference
+                            to suppress straight-line FPs)
+  4. bn_alloc_copy.dl     — alloc/copy size mismatch (NEW bug class)
+  5. bn_unguarded_sink.dl — TaintedSink \\ GuardedSink
+  6. bn_loop_bound.dl     — tainted loop bound (BOIL refinement)
+  7. bn_unguarded_cast.dl — trunc/sx without CFG-reaching guard
+  8. bn_arith_overflow.dl — narrow signed arith overflow + sink coupling
+  9. bn_findings.dl       — unified BnFinding aggregation
+
+**9. Optionally run additional rule files** for orthogonal coverage:
+  - `patterns.dl`, `patterns_mem_interproc.dl` (UAF, double-free, etc.)
+  - `inttype.dl`, `inttype_taint.dl` (classic integer bugs — overlapping but
+    distinct from bn_arith_overflow.dl)
+  - `boil.dl`, `boil_taint.dl` (buffer-overflow-inducing loops)
+
+**10. Interpret and report.** Read the relevant CSVs, pair findings with
+`decompile_function` output, cite file_path:line_number when referencing
+code, group by severity (BnFinding has a severity column). Prefer
+`BnFinding.csv` as the single consolidated view — it unions all Bn*
+outputs with a consistent (severity, category, var, detail) shape.
+
+### Alternative: Interactive MCP extraction
+
+Use only when batch extraction is unavailable. Steps 1/3 are replaced by
+`tool_extract_facts` (MCP-based, text-parser); the rest is identical.
+MCP extraction doesn't emit StackVar/VarWidth/Cast/VarSign and cannot
+resolve indirect calls — expect reduced rule coverage.
 
 ### Alternative: Interactive MCP extraction
 Use when you need to explore incrementally or BN headless is unavailable.
