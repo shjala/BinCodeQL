@@ -1,0 +1,122 @@
+// BinCodeQL — Unified Bn* findings aggregation
+//
+// Produces a single BnFinding relation that unions findings from the Bn*
+// rule set. Analogue of NeuroLog's MemSafetyFinding / TypeSafetyFinding
+// summary relations. Only the successfully-ported rules are included —
+// source-only findings (e.g. TypeKnowledge-dependent signedness mismatch)
+// are intentionally absent.
+//
+// Run LAST, after all other Bn* rules. Expects the Bn*.csv outputs from
+// earlier passes to have been staged as facts (see tool_run_bn_extra_rules).
+
+// ── Types ────────────────────────────────────────────────────────────
+.type Addr <: unsigned
+.type Sym  <: symbol
+.type Ver  <: unsigned
+.type Idx  <: unsigned
+
+// ── Staged input facts (Bn*.csv → facts/Bn*.facts) ──────────────────
+.decl BnUnboundedCounter(func: Sym, var: Sym, ver: Ver, incr_addr: Addr)
+.input BnUnboundedCounter
+
+.decl BnTaintedUnboundedCounter(func: Sym, var: Sym, ver: Ver,
+                                incr_addr: Addr, origin: Sym)
+.input BnTaintedUnboundedCounter
+
+.decl BnCounterUsedAsIndex(func: Sym, var: Sym, ver: Ver,
+                           incr_addr: Addr, use_addr: Addr, kind: Sym)
+.input BnCounterUsedAsIndex
+
+.decl BnTaintedCounterAsIndex(func: Sym, var: Sym, ver: Ver,
+                              incr_addr: Addr, use_addr: Addr,
+                              kind: Sym, origin: Sym)
+.input BnTaintedCounterAsIndex
+
+.decl BnAllocCopyMismatch(func: Sym, alloc_addr: Addr, copy_addr: Addr,
+                          buf: Sym, alloc_size: Sym, copy_size: Sym,
+                          alloc_func: Sym, copy_func: Sym,
+                          pattern: Sym,
+                          alloc_origin: Sym, copy_origin: Sym)
+.input BnAllocCopyMismatch
+
+.decl BnAllocThenUnboundedCopy(func: Sym, alloc_addr: Addr, copy_addr: Addr,
+                               buf: Sym, alloc_size: Sym,
+                               alloc_func: Sym, copy_func: Sym, origin: Sym)
+.input BnAllocThenUnboundedCopy
+
+.decl BnUnguardedTaintedSink(caller: Sym, callee: Sym, call_addr: Addr,
+                             arg_idx: Idx, tainted_var: Sym,
+                             risk: Sym, origin: Sym)
+.input BnUnguardedTaintedSink
+
+.decl BnUnguardedDangerousCast(func: Sym, cast_addr: Addr,
+                               src: Sym, src_ver: Ver,
+                               dst: Sym, dst_ver: Ver,
+                               kind: Sym,
+                               src_width: unsigned, dst_width: unsigned)
+.input BnUnguardedDangerousCast
+
+.decl BnTaintedOverflowAtSink(func: Sym, arith_addr: Addr, sink_addr: Addr,
+                              var: Sym, callee: Sym, arg_idx: Idx,
+                              origin: Sym)
+.input BnTaintedOverflowAtSink
+
+.decl BnTaintedLoopBound(func: Sym, guard_addr: Addr,
+                         loop_var: Sym, loop_ver: Ver,
+                         bound_var: Sym, bound_ver: Ver,
+                         op: Sym, origin: Sym, taint_side: Sym)
+.input BnTaintedLoopBound
+
+// ── Unified finding ──────────────────────────────────────────────────
+// severity: "high" (tainted + exploitable-shape) or "medium" (structural).
+// category: short tag for triage filtering.
+
+.decl BnFinding(func: Sym, addr: Addr, severity: Sym,
+                category: Sym, var: Sym, detail: Sym)
+
+// Tainted unbounded counter — high severity (attacker-controlled iteration)
+BnFinding(f, ia, "high", "tainted_unbounded_counter", v,
+          cat("origin=", origin)) :-
+    BnTaintedUnboundedCounter(f, v, _, ia, origin).
+
+// Tainted counter-as-index — high severity (OOB read/write shape)
+BnFinding(f, ua, "high", "tainted_counter_as_index", v,
+          cat(kind, cat(" incr@", to_string(ia)))) :-
+    BnTaintedCounterAsIndex(f, v, _, ia, ua, kind, _).
+
+// Unbounded counter (non-tainted) — medium severity (triage)
+BnFinding(f, ia, "medium", "unbounded_counter", v, "no upper-bound guard") :-
+    BnUnboundedCounter(f, v, _, ia),
+    !BnTaintedUnboundedCounter(f, v, _, ia, _).
+
+// Alloc/copy mismatch — high severity (heap overflow shape)
+BnFinding(f, ca, "high", cat("alloc_copy_", pattern), buf,
+          cat(af, cat("(", cat(asz, cat(") then ", cat(cf, cat("(", cat(csz, ")")))))))) :-
+    BnAllocCopyMismatch(f, _, ca, buf, asz, csz, af, cf, pattern, _, _).
+
+// Alloc + unbounded copy — high severity
+BnFinding(f, ca, "high", "alloc_then_unbounded_copy", buf,
+          cat(af, cat("(", cat(asz, cat(") then ", cf))))) :-
+    BnAllocThenUnboundedCopy(f, _, ca, buf, asz, af, cf, _).
+
+// Unguarded tainted sink — high severity
+BnFinding(caller, ca, "high", "unguarded_tainted_sink", tv,
+          cat(callee, cat(" arg", cat(to_string(idx), cat(" risk=", risk))))) :-
+    BnUnguardedTaintedSink(caller, callee, ca, idx, tv, risk, _).
+
+// Tainted arithmetic overflow at sink — high severity
+BnFinding(f, aa, "high", "tainted_overflow_at_sink", v,
+          cat(callee, cat(" sink@", cat(to_string(sa), cat(" origin=", origin))))) :-
+    BnTaintedOverflowAtSink(f, aa, sa, v, callee, _, origin).
+
+// Unguarded dangerous cast — medium severity (structural)
+BnFinding(f, ca, "medium", cat("unguarded_cast_", kind), src,
+          cat(to_string(sw), cat("→", to_string(dw)))) :-
+    BnUnguardedDangerousCast(f, ca, src, _, _, _, kind, sw, dw).
+
+// Tainted loop bound — medium severity (precedes BOIL triage)
+BnFinding(f, ga, "medium", "tainted_loop_bound", lv,
+          cat(op, cat(" ", cat(taint_side, cat(" origin=", origin))))) :-
+    BnTaintedLoopBound(f, ga, lv, _, _, _, op, origin, taint_side).
+
+.output BnFinding

@@ -23,6 +23,20 @@ TaintTransfer("memmove", "return", "arg0").
 TaintTransfer("memccpy", "arg0", "arg1").
 TaintTransfer("memccpy", "return", "arg0").
 
+// Compiler builtins — BN resolves calls to these names for inlined libc
+// memcpy/memmove. Signatures must mirror the non-builtin variants so taint
+// propagates through them identically.
+TaintTransfer("__builtin_memcpy",  "arg0", "arg1").
+TaintTransfer("__builtin_memcpy",  "return", "arg0").
+TaintTransfer("__builtin_memmove", "arg0", "arg1").
+TaintTransfer("__builtin_memmove", "return", "arg0").
+
+// Fortify-source wrappers: __memcpy_chk(dst, src, n, dstlen)
+TaintTransfer("__memcpy_chk",  "arg0", "arg1").
+TaintTransfer("__memcpy_chk",  "return", "arg0").
+TaintTransfer("__memmove_chk", "arg0", "arg1").
+TaintTransfer("__memmove_chk", "return", "arg0").
+
 // bcopy(src, dst, n) — note reversed arg order vs memcpy
 TaintTransfer("bcopy", "arg1", "arg0").
 
@@ -118,6 +132,8 @@ TaintTransfer("getline", "arg0", "external").
 // memset(dst, val, n): dst ← val (usually constant, so untainted)
 // We model it as: return = dst pointer (taint passthrough for pointer)
 TaintTransfer("memset", "return", "arg0").
+TaintTransfer("__builtin_memset", "return", "arg0").
+TaintTransfer("__memset_chk",     "return", "arg0").
 // Note: memset does NOT propagate taint from arg1 to arg0 in most models
 // because arg1 is typically a constant (0). If you want conservative:
 // TaintTransfer("memset", "arg0", "arg1").
@@ -173,6 +189,8 @@ BufferWriteSource("png_crc_read", 1).
 
 // memset(dst, val, n) — clears buffer contents
 TaintKill("memset", 0).
+TaintKill("__builtin_memset", 0).
+TaintKill("__memset_chk", 0).
 // bzero(s, n) — zeros memory
 TaintKill("bzero", 0).
 // explicit_bzero(s, n) — guaranteed zero (not optimized away)

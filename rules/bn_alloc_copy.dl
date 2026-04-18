@@ -1,0 +1,174 @@
+// BinCodeQL — Alloc/Copy size mismatch (new vulnerability class)
+//
+// Ports NeuroLog rules from source_memsafety.dl (AllocSite, CopySite,
+// AllocCopyMismatch, AllocThenUnboundedCopy).
+//
+// Classic heap overflow pattern: buf = malloc(A); then memcpy(buf, src, B)
+// where A ≠ B, or strcpy on a buffer whose size is attacker-controlled.
+//
+// MLIL-SSA adaptation: the malloc return value gets a definite SSA version
+// at the call address (via Def). We use Flow to trace that buf#ver to the
+// copy's destination arg.
+//
+// Consumes: Call, ActualArg, Def, Use, PhiSource, TaintedVar.
+
+// ── Types ────────────────────────────────────────────────────────────
+.type Addr <: unsigned
+.type Sym  <: symbol
+.type Ver  <: unsigned
+.type Idx  <: unsigned
+
+// ── Input facts ──────────────────────────────────────────────────────
+.decl Def(func: Sym, var: Sym, ver: Ver, addr: Addr)
+.input Def
+
+.decl Use(func: Sym, var: Sym, ver: Ver, addr: Addr)
+.input Use
+
+.decl Call(caller: Sym, callee: Sym, addr: Addr)
+.input Call
+
+.decl ActualArg(call_addr: Addr, arg_idx: Idx, param: Sym, var: Sym, ver: Ver)
+.input ActualArg
+
+.decl PhiSource(func: Sym, var: Sym, def_ver: Ver, src_var: Sym, src_ver: Ver)
+.input PhiSource
+
+.decl TaintedVar(func: Sym, var: Sym, ver: Ver, origin: Sym, ctx: Addr)
+.input TaintedVar
+
+// BnFlow is pre-computed by bn_flow.dl (shared across Bn* rules).
+.decl BnFlow(func: Sym, src_var: Sym, src_ver: Ver, dst_var: Sym, dst_ver: Ver)
+.input BnFlow
+
+// ── Allocator signatures: (func, size_arg_idx) ───────────────────────
+.decl BnAllocFunc(callee: Sym, size_arg: Idx)
+BnAllocFunc("malloc",       0).
+BnAllocFunc("calloc",       0).
+BnAllocFunc("calloc",       1).
+BnAllocFunc("realloc",      1).
+BnAllocFunc("reallocarray", 1).
+BnAllocFunc("reallocarray", 2).
+BnAllocFunc("alloca",       0).
+BnAllocFunc("valloc",       0).
+BnAllocFunc("memalign",     1).
+BnAllocFunc("xmalloc",      0).
+BnAllocFunc("g_malloc",     0).
+BnAllocFunc("g_try_malloc", 0).
+
+// ── Copy signatures: (func, dst_arg_idx, size_arg_idx) ───────────────
+.decl BnCopyFunc(callee: Sym, dst_arg: Idx, size_arg: Idx)
+BnCopyFunc("memcpy",           0, 2).
+BnCopyFunc("memmove",          0, 2).
+BnCopyFunc("memccpy",          0, 3).
+BnCopyFunc("strncpy",          0, 2).
+BnCopyFunc("fread",            0, 2).
+BnCopyFunc("__memcpy_chk",     0, 2).
+BnCopyFunc("__memmove_chk",    0, 2).
+BnCopyFunc("__strncpy_chk",    0, 2).
+// Compiler-builtin names emitted by BN when libc functions are inlined.
+BnCopyFunc("__builtin_memcpy",  0, 2).
+BnCopyFunc("__builtin_memmove", 0, 2).
+
+// ── Unbounded copy signatures (no explicit size arg) ─────────────────
+.decl BnUnboundedCopyFunc(callee: Sym, dst_arg: Idx)
+BnUnboundedCopyFunc("strcpy",  0).
+BnUnboundedCopyFunc("strcat",  0).
+BnUnboundedCopyFunc("sprintf", 0).
+BnUnboundedCopyFunc("__strcpy_chk", 0).
+BnUnboundedCopyFunc("__strcat_chk", 0).
+
+// ════════════════════════════════════════════════════════════════════
+// RULE 1: AllocSite — (buf, size_var) pair at an allocation call
+// ════════════════════════════════════════════════════════════════════
+// MLIL-SSA emits Def(buf, ver, call_addr) for the SSA variable that
+// receives the return value of malloc. That buf#ver is the allocation
+// identity we trace to downstream copies.
+
+.decl BnAllocSite(func: Sym, call_addr: Addr,
+                  buf: Sym, buf_ver: Ver,
+                  size_var: Sym, size_ver: Ver, alloc_func: Sym)
+
+BnAllocSite(f, ca, buf, bver, sv, sver, callee) :-
+    Call(f, callee, ca),
+    BnAllocFunc(callee, size_idx),
+    ActualArg(ca, size_idx, _, sv, sver),
+    Def(f, buf, bver, ca),
+    buf != "mem".
+
+.output BnAllocSite
+
+// ════════════════════════════════════════════════════════════════════
+// RULE 2: CopySite — (dst_var, size_var) pair at a bounded copy call
+// ════════════════════════════════════════════════════════════════════
+
+.decl BnCopySite(func: Sym, call_addr: Addr,
+                 dst: Sym, dst_ver: Ver,
+                 size_var: Sym, size_ver: Ver, copy_func: Sym)
+
+BnCopySite(f, ca, dv, dver, sv, sver, callee) :-
+    Call(f, callee, ca),
+    BnCopyFunc(callee, dst_idx, size_idx),
+    ActualArg(ca, dst_idx, _, dv, dver),
+    ActualArg(ca, size_idx, _, sv, sver).
+
+.output BnCopySite
+
+// ════════════════════════════════════════════════════════════════════
+// RULE 3: AllocCopyMismatch
+// ════════════════════════════════════════════════════════════════════
+// The allocated buffer's SSA identity flows to a copy's dst arg, but the
+// alloc size and copy size differ. Two patterns:
+//   A. both_tainted_diff — both sizes tainted, from different origins
+//      (asz != csz), the classic "alloc with length A, copy length B" bug.
+//   B. untainted_alloc_tainted_copy — alloc size is not tainted, copy size
+//      is. Attacker controls copy length but not allocation — direct overflow.
+
+.decl BnAllocCopyMismatch(func: Sym, alloc_addr: Addr, copy_addr: Addr,
+                          buf: Sym, alloc_size: Sym, copy_size: Sym,
+                          alloc_func: Sym, copy_func: Sym,
+                          pattern: Sym,
+                          alloc_origin: Sym, copy_origin: Sym)
+
+// Pattern A: both sizes tainted, different variables
+BnAllocCopyMismatch(f, aa, ca, buf, asz, csz, af, cf,
+                    "both_tainted_diff", a_origin, c_origin) :-
+    BnAllocSite(f, aa, buf, bver, asz, _, af),
+    BnFlow(f, buf, bver, dv, dver),
+    BnCopySite(f, ca, dv, dver, csz, _, cf),
+    asz != csz,
+    TaintedVar(f, asz, _, a_origin, _),
+    TaintedVar(f, csz, _, c_origin, _).
+
+// Pattern B: untainted alloc size, tainted copy size
+BnAllocCopyMismatch(f, aa, ca, buf, asz, csz, af, cf,
+                    "untainted_alloc_tainted_copy", "none", c_origin) :-
+    BnAllocSite(f, aa, buf, bver, asz, _, af),
+    BnFlow(f, buf, bver, dv, dver),
+    BnCopySite(f, ca, dv, dver, csz, _, cf),
+    !TaintedVar(f, asz, _, _, _),
+    TaintedVar(f, csz, _, c_origin, _).
+
+.output BnAllocCopyMismatch
+
+// ════════════════════════════════════════════════════════════════════
+// RULE 4: AllocThenUnboundedCopy — malloc then strcpy/strcat/sprintf
+// ════════════════════════════════════════════════════════════════════
+// Pattern C: allocated buffer fed to an unbounded copy primitive.
+// If the alloc size is tainted (attacker-controlled), the copy can always
+// overflow: even a buf sized for the exact input may be underestimated
+// if the source string is unterminated.
+
+.decl BnAllocThenUnboundedCopy(func: Sym, alloc_addr: Addr, copy_addr: Addr,
+                               buf: Sym, alloc_size: Sym,
+                               alloc_func: Sym, copy_func: Sym, origin: Sym)
+
+BnAllocThenUnboundedCopy(f, aa, ca, buf, asz, af, callee, origin) :-
+    BnAllocSite(f, aa, buf, bver, asz, _, af),
+    TaintedVar(f, asz, _, origin, _),
+    BnFlow(f, buf, bver, dv, dver),
+    Call(f, callee, ca),
+    BnUnboundedCopyFunc(callee, dst_idx),
+    ActualArg(ca, dst_idx, _, dv, dver).
+
+.output BnAllocThenUnboundedCopy

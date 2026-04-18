@@ -1,0 +1,64 @@
+// BinCodeQL — Tainted loop bound detection (BOIL refinement)
+//
+// Ports NeuroLog source_memsafety.dl RULE 3 (TaintedLoopBound +
+// BufferOverflowInLoop).
+//
+// Key MLIL-SSA adaptation: the loop-bound op set is
+//   {slt, sle, ult, ule, ne}
+// NOT {eq} — equality is a sentinel check, not a loop continuation predicate.
+//
+// Complements the existing boil.dl BOILCandidate without modifying it.
+// Output feeds forward to triage: any BOILCandidate whose guard is also
+// a tainted loop bound is high-confidence.
+
+// ── Types ────────────────────────────────────────────────────────────
+.type Addr <: unsigned
+.type Sym  <: symbol
+.type Ver  <: unsigned
+
+// ── Input facts ──────────────────────────────────────────────────────
+.decl Guard(func: Sym, addr: Addr, var: Sym, ver: Ver,
+            op: Sym, bound: Sym, bound_type: Sym)
+.input Guard
+
+.decl BnFlow(func: Sym, src_var: Sym, src_ver: Ver,
+             dst_var: Sym, dst_ver: Ver)
+.input BnFlow
+
+.decl TaintedVar(func: Sym, var: Sym, ver: Ver, origin: Sym, ctx: Addr)
+.input TaintedVar
+
+// ── Tainted loop bound ──────────────────────────────────────────────
+// A guard whose operator is a proper loop-continuation predicate and whose
+// bound (or loop variable) is tainted from attacker input.
+
+.decl BnTaintedLoopBound(func: Sym, guard_addr: Addr,
+                         loop_var: Sym, loop_ver: Ver,
+                         bound_var: Sym, bound_ver: Ver,
+                         op: Sym, origin: Sym, taint_side: Sym)
+
+// (a) Tainted bound — attacker controls the upper limit.
+//     The Guard fact's `bound` column is a symbol (variable name or literal).
+//     We only fire if the bound_type is a variable AND the variable is tainted.
+BnTaintedLoopBound(f, ga, lv, lver, bv, bver, op, origin, "bound_tainted") :-
+    Guard(f, ga, lv, lver, op, bv, bt),
+    (bt = "var" ; bt = "variable"),
+    (op = "slt" ; op = "sle" ; op = "ult" ; op = "ule" ; op = "ne"),
+    // Find ANY tainted SSA version of the bound variable in this function.
+    TaintedVar(f, bv, bver, origin, _).
+
+// (b) Tainted loop variable — attacker controls the iteration value directly.
+BnTaintedLoopBound(f, ga, lv, lver, lv, lver, op, origin, "loop_var_tainted") :-
+    Guard(f, ga, lv, lver, op, _, _),
+    (op = "slt" ; op = "sle" ; op = "ult" ; op = "ule" ; op = "ne"),
+    TaintedVar(f, lv, lver, origin, _).
+
+// (c) Tainted loop variable via flow — common loop-carried pattern where
+//     the guarded version is a phi/copy successor of the tainted definition.
+BnTaintedLoopBound(f, ga, lv, lver, lv, lver, op, origin, "loop_var_tainted_flow") :-
+    Guard(f, ga, lv, lver, op, _, _),
+    (op = "slt" ; op = "sle" ; op = "ult" ; op = "ule" ; op = "ne"),
+    BnFlow(f, tv, tver, lv, lver),
+    TaintedVar(f, tv, tver, origin, _).
+
+.output BnTaintedLoopBound

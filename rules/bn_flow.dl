@@ -1,0 +1,57 @@
+// BinCodeQL — Shared intraprocedural data-flow pre-computation
+//
+// Computes BnFlow once and emits it for consumption by downstream Bn* rules.
+// Replaces the per-file inline Flow closure that was a major bottleneck in
+// Phase 1 (bn_counter_oob.dl 6m36s, bn_alloc_copy.dl 3m22s on the ffmpeg
+// h264_decode_frame function: 2853 PhiSources × 3768 Uses transitive).
+//
+// Usage:
+//   1. Run this file first:  souffle -F facts/ -D output/ rules/bn_flow.dl
+//   2. Copy output/BnFlow.csv → facts/BnFlow.facts
+//   3. Run bn_counter_oob.dl / bn_alloc_copy.dl which declare
+//      `.input BnFlow` and skip re-deriving the closure.
+//
+// Includes identity `BnFlow(v, ver, v, ver)` so downstream rules can use
+// a uniform pattern `BnFlow(v, ver, uv, uver), Use(uv, uver, ua)` that
+// matches both direct uses and flow-reachable uses.
+
+// ── Types ────────────────────────────────────────────────────────────
+.type Addr <: unsigned
+.type Sym  <: symbol
+.type Ver  <: unsigned
+
+// ── Input facts ──────────────────────────────────────────────────────
+.decl Def(func: Sym, var: Sym, ver: Ver, addr: Addr)
+.input Def
+
+.decl Use(func: Sym, var: Sym, ver: Ver, addr: Addr)
+.input Use
+
+.decl PhiSource(func: Sym, var: Sym, def_ver: Ver, src_var: Sym, src_ver: Ver)
+.input PhiSource
+
+// ── BnFlow ───────────────────────────────────────────────────────────
+.decl BnFlow(func: Sym, src_var: Sym, src_ver: Ver, dst_var: Sym, dst_ver: Ver)
+
+// Direct assignment: dst is defined at an address where src is used.
+BnFlow(f, sv, sver, dv, dver) :-
+    Use(f, sv, sver, a),
+    Def(f, dv, dver, a),
+    (sv != dv ; sver != dver).
+
+// Phi merge: (src_var, src_ver) flows into phi's (def_var, def_ver).
+BnFlow(f, sv, sver, dv, dver) :-
+    PhiSource(f, dv, dver, sv, sver).
+
+// Identity: every defined SSA variable flows to itself. Enables the
+// uniform downstream pattern above.
+BnFlow(f, v, ver, v, ver) :-
+    Def(f, v, ver, _).
+
+// Transitive closure.
+BnFlow(f, sv, sver, dv, dver) :-
+    BnFlow(f, sv, sver, mid, mver),
+    BnFlow(f, mid, mver, dv, dver),
+    (sv != dv ; sver != dver).
+
+.output BnFlow

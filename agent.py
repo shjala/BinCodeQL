@@ -764,6 +764,125 @@ def tool_run_taint_pipeline(
     return results
 
 
+def tool_run_bn_extra_rules(
+    facts_dir: str = "",
+    output_dir: str = "",
+    timeout_seconds: int = 120,
+) -> dict:
+    """Run the Bn* extra-rule pipeline (ported from NeuroLog).
+
+    Additive to existing outputs — does NOT clear non-Bn* CSVs.
+    Pass order (Phase 1 + Phase 2):
+       1. bn_flow.dl             — shared Flow transitive closure
+       2. bn_signed_infer.dl     — signedness heuristic
+       3. bn_counter_oob.dl      — unbounded-counter / counter-as-index
+       4. bn_alloc_copy.dl       — alloc/copy size-mismatch
+       5. bn_unguarded_sink.dl   — TaintedSink \\ GuardedSink
+       6. bn_loop_bound.dl       — tainted loop bound (BOIL refinement)
+       7. bn_unguarded_cast.dl   — narrowing/sign-extend cast without guard
+       8. bn_arith_overflow.dl   — narrow signed overflow + sink coupling
+       9. bn_findings.dl         — unified BnFinding summary
+
+    Staging between passes copies derived CSVs back to facts/ so downstream
+    rules can consume them via .input.
+
+    Requires TaintedVar.facts in the facts dir for the tainted variants.
+    Run `tool_run_taint_pipeline` first, then copy output/TaintedVar.csv →
+    facts/TaintedVar.facts manually (or via a script), then invoke this.
+
+    Args:
+        facts_dir: Directory with .facts files. Defaults to project facts/ dir.
+        output_dir: Directory for output CSVs. Defaults to project output/ dir.
+        timeout_seconds: Max per-pass timeout (default 120s).
+
+    Returns:
+        Dict with per-pass status and row counts of Bn* outputs.
+    """
+    fdir = Path(facts_dir) if facts_dir else FACTS_DIR
+    odir = Path(output_dir) if output_dir else OUTPUT_DIR
+    odir.mkdir(parents=True, exist_ok=True)
+
+    # Ensure TaintedVar.facts exists (empty is acceptable — non-tainted variants still fire)
+    tv_facts = fdir / "TaintedVar.facts"
+    if not tv_facts.exists():
+        tv_facts.touch()
+
+    results: dict = {"passes": {}, "outputs": {}}
+    rule_files = [
+        "bn_flow.dl",
+        "bn_signed_infer.dl",
+        "bn_counter_oob.dl",
+        "bn_alloc_copy.dl",
+        "bn_unguarded_sink.dl",
+        "bn_loop_bound.dl",
+        "bn_unguarded_cast.dl",
+        "bn_arith_overflow.dl",
+        "bn_findings.dl",
+    ]
+
+    # Stage a CSV from earlier rule to facts/ so subsequent rules can read it.
+    # Also stages TaintedSink/GuardedSink from interproc output at the start so
+    # bn_unguarded_sink can consume them.
+    stage_after = {
+        "bn_flow.dl":             [("BnFlow.csv",                  "BnFlow.facts")],
+        "bn_signed_infer.dl":     [("BnSignedness.csv",            "BnSignedness.facts")],
+        "bn_counter_oob.dl":      [("BnUnboundedCounter.csv",      "BnUnboundedCounter.facts"),
+                                   ("BnTaintedUnboundedCounter.csv","BnTaintedUnboundedCounter.facts"),
+                                   ("BnCounterUsedAsIndex.csv",    "BnCounterUsedAsIndex.facts"),
+                                   ("BnTaintedCounterAsIndex.csv", "BnTaintedCounterAsIndex.facts")],
+        "bn_alloc_copy.dl":       [("BnAllocCopyMismatch.csv",     "BnAllocCopyMismatch.facts"),
+                                   ("BnAllocThenUnboundedCopy.csv","BnAllocThenUnboundedCopy.facts")],
+        "bn_unguarded_sink.dl":   [("BnUnguardedTaintedSink.csv",  "BnUnguardedTaintedSink.facts")],
+        "bn_loop_bound.dl":       [("BnTaintedLoopBound.csv",      "BnTaintedLoopBound.facts")],
+        "bn_unguarded_cast.dl":   [("BnUnguardedDangerousCast.csv","BnUnguardedDangerousCast.facts")],
+        "bn_arith_overflow.dl":   [("BnTaintedOverflowAtSink.csv", "BnTaintedOverflowAtSink.facts")],
+    }
+
+    # One-time pre-stage: copy TaintedSink/GuardedSink from the interproc.dl
+    # output so bn_unguarded_sink has its inputs. Harmless if they don't exist.
+    for rel in ("TaintedSink", "GuardedSink"):
+        src = odir / f"{rel}.csv"
+        dst = fdir / f"{rel}.facts"
+        if src.exists() and not dst.exists():
+            dst.write_text(src.read_text())
+
+    for rf in rule_files:
+        rf_path = RULES_DIR / rf
+        if not rf_path.exists():
+            return {"error": f"Rule file not found: {rf_path}"}
+
+        try:
+            r = subprocess.run(
+                ["souffle", "-F", str(fdir), "-D", str(odir), str(rf_path)],
+                capture_output=True, text=True, timeout=timeout_seconds,
+            )
+        except subprocess.TimeoutExpired:
+            results["passes"][rf] = {"error": f"timed out after {timeout_seconds}s"}
+            return results
+
+        results["passes"][rf] = {"return_code": r.returncode}
+        if r.returncode != 0:
+            results["passes"][rf]["stderr"] = r.stderr.strip()
+
+        for csv_name, facts_name in stage_after.get(rf, []):
+            src = odir / csv_name
+            dst = fdir / facts_name
+            if src.exists():
+                content = src.read_text().strip()
+                dst.write_text(content + "\n" if content else "")
+
+    # Collect only Bn* outputs for reporting
+    for f in sorted(odir.glob("Bn*.csv")):
+        content = f.read_text().strip()
+        rows = len(content.split("\n")) if content else 0
+        results["outputs"][f.name] = {
+            "rows": rows,
+            "preview": content.split("\n")[:10] if content else [],
+        }
+
+    return results
+
+
 # =============================================================================
 # Agent instruction prompt
 # =============================================================================
@@ -1007,6 +1126,7 @@ root_agent = LlmAgent(
         FunctionTool(tool_generate_annotations),
         FunctionTool(tool_set_entry_taint),
         FunctionTool(tool_run_taint_pipeline),
+        FunctionTool(tool_run_bn_extra_rules),
         create_mcp_toolset(),
     ],
 )

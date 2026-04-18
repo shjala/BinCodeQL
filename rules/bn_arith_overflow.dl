@@ -1,0 +1,154 @@
+// BinCodeQL — Potential arithmetic overflow (narrow signed arith without guard)
+//
+// Ports NeuroLog source_type_safety.dl RULE 9c (PotentialArithOverflow +
+// OverflowAtSink + TaintedOverflowAtSink).
+//
+// Binary adaptation: NeuroLog used VarType signedness. We use BnSignedness
+// (from bn_signed_infer.dl) and conservatively fire ONLY when signedness is
+// positively inferred as "signed". "conflict"/"unknown" do not trigger.
+//
+// Consumes: ArithOp, Guard, CFGEdge, VarWidth, BnSignedness, BnFlow,
+//           ActualArg, Call, TaintedVar.
+
+// ── Types ────────────────────────────────────────────────────────────
+.type Addr <: unsigned
+.type Sym  <: symbol
+.type Ver  <: unsigned
+.type Idx  <: unsigned
+
+// ── Input facts ──────────────────────────────────────────────────────
+.decl ArithOp(func: Sym, addr: Addr, dst: Sym, dst_ver: Ver,
+              op: Sym, src: Sym, src_ver: Ver, operand: Sym)
+.input ArithOp
+
+.decl Guard(func: Sym, addr: Addr, var: Sym, ver: Ver,
+            op: Sym, bound: Sym, bound_type: Sym)
+.input Guard
+
+.decl CFGEdge(func: Sym, from_addr: Addr, to_addr: Addr)
+.input CFGEdge
+
+.decl VarWidth(func: Sym, var: Sym, ver: Ver, width: unsigned)
+.input VarWidth
+
+.decl Call(caller: Sym, callee: Sym, addr: Addr)
+.input Call
+
+.decl ActualArg(call_addr: Addr, arg_idx: Idx, param: Sym, var: Sym, ver: Ver)
+.input ActualArg
+
+.decl BnSignedness(func: Sym, var: Sym, ver: Ver, sign: Sym)
+.input BnSignedness
+
+.decl BnFlow(func: Sym, src_var: Sym, src_ver: Ver,
+             dst_var: Sym, dst_ver: Ver)
+.input BnFlow
+
+.decl TaintedVar(func: Sym, var: Sym, ver: Ver, origin: Sym, ctx: Addr)
+.input TaintedVar
+
+// ── CFG reachability ─────────────────────────────────────────────────
+.decl BnCFGReach(func: Sym, from_addr: Addr, to_addr: Addr)
+BnCFGReach(f, a, b) :- CFGEdge(f, a, b).
+BnCFGReach(f, a, c) :- BnCFGReach(f, a, b), CFGEdge(f, b, c).
+
+// ── Size-sensitive sinks ─────────────────────────────────────────────
+.decl BnSizeSensitiveSink(callee: Sym, arg_idx: Idx)
+BnSizeSensitiveSink("malloc",        0).
+BnSizeSensitiveSink("calloc",        0).
+BnSizeSensitiveSink("calloc",        1).
+BnSizeSensitiveSink("realloc",       1).
+BnSizeSensitiveSink("reallocarray",  1).
+BnSizeSensitiveSink("reallocarray",  2).
+BnSizeSensitiveSink("alloca",        0).
+BnSizeSensitiveSink("memcpy",        2).
+BnSizeSensitiveSink("memmove",       2).
+BnSizeSensitiveSink("memset",        2).
+BnSizeSensitiveSink("strncpy",       2).
+BnSizeSensitiveSink("strncat",       2).
+BnSizeSensitiveSink("read",          2).
+BnSizeSensitiveSink("recv",          2).
+BnSizeSensitiveSink("fread",         1).
+BnSizeSensitiveSink("fread",         2).
+BnSizeSensitiveSink("__memcpy_chk",  2).
+BnSizeSensitiveSink("__memmove_chk", 2).
+BnSizeSensitiveSink("__builtin_memcpy",  2).
+BnSizeSensitiveSink("__builtin_memmove", 2).
+
+// ── Effective guard for arith: a guard on the arith dst that reaches the
+//    arith address on the CFG (pre-check) or is reachable FROM it (post-check).
+.decl BnEffectiveGuardForArith(func: Sym, arith_addr: Addr,
+                               var: Sym, ver: Ver)
+
+BnEffectiveGuardForArith(f, aa, v, ver) :-
+    Guard(f, ga, v, ver, _, _, _),
+    BnCFGReach(f, ga, aa).
+
+BnEffectiveGuardForArith(f, aa, v, ver) :-
+    Guard(f, ga, v, ver, _, _, _),
+    BnCFGReach(f, aa, ga).
+
+// Flow-lifted: guard on any SSA-connected version counts.
+BnEffectiveGuardForArith(f, aa, v, ver) :-
+    Guard(f, ga, gv, gver, _, _, _),
+    BnFlow(f, gv, gver, v, ver),
+    BnCFGReach(f, ga, aa).
+
+// ════════════════════════════════════════════════════════════════════
+// RULE 1: PotentialArithOverflow — narrow signed arith with no guard
+// ════════════════════════════════════════════════════════════════════
+// Fires conservatively: width ≤ 4 bytes, BnSignedness = "signed" (never
+// "unknown" or "conflict"), op ∈ {add, mul, lsl}, no effective guard.
+
+.decl BnPotentialArithOverflow(func: Sym, addr: Addr,
+                               var: Sym, ver: Ver,
+                               op: Sym, width: unsigned)
+
+BnPotentialArithOverflow(f, aa, dst, dver, op, w) :-
+    ArithOp(f, aa, dst, dver, op, _, _, _),
+    (op = "add" ; op = "mul" ; op = "lsl"),
+    VarWidth(f, dst, dver, w),
+    w <= 4,
+    BnSignedness(f, dst, dver, "signed"),
+    !BnEffectiveGuardForArith(f, aa, dst, dver).
+
+.output BnPotentialArithOverflow
+
+// ════════════════════════════════════════════════════════════════════
+// RULE 2: OverflowAtSink — overflowing arith flows to size-sensitive sink
+// ════════════════════════════════════════════════════════════════════
+
+.decl BnOverflowAtSink(func: Sym, arith_addr: Addr, sink_addr: Addr,
+                       var: Sym, callee: Sym, arg_idx: Idx)
+
+BnOverflowAtSink(f, aa, sa, v, callee, idx) :-
+    BnPotentialArithOverflow(f, aa, v, ver, _, _),
+    BnFlow(f, v, ver, av, aver),
+    Call(f, callee, sa),
+    ActualArg(sa, idx, _, av, aver),
+    BnSizeSensitiveSink(callee, idx).
+
+.output BnOverflowAtSink
+
+// ════════════════════════════════════════════════════════════════════
+// RULE 3: TaintedOverflowAtSink — the exploitable pattern
+// ════════════════════════════════════════════════════════════════════
+
+.decl BnTaintedOverflowAtSink(func: Sym, arith_addr: Addr, sink_addr: Addr,
+                              var: Sym, callee: Sym, arg_idx: Idx,
+                              origin: Sym)
+
+// (a) Direct: arith destination is itself tainted.
+BnTaintedOverflowAtSink(f, aa, sa, v, callee, idx, origin) :-
+    BnOverflowAtSink(f, aa, sa, v, callee, idx),
+    BnPotentialArithOverflow(f, aa, v, ver, _, _),
+    TaintedVar(f, v, ver, origin, _).
+
+// (b) Indirect: an arith source operand is tainted (the overflow arises
+//     from a tainted input value).
+BnTaintedOverflowAtSink(f, aa, sa, v, callee, idx, origin) :-
+    BnOverflowAtSink(f, aa, sa, v, callee, idx),
+    ArithOp(f, aa, v, _, _, src, src_ver, _),
+    TaintedVar(f, src, src_ver, origin, _).
+
+.output BnTaintedOverflowAtSink

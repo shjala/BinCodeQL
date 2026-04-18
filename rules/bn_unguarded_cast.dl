@@ -1,0 +1,80 @@
+// BinCodeQL — Cast without a preceding guard (absence-of-guard pattern)
+//
+// Ports NeuroLog source_type_safety.dl RULE 7 (GuardedBeforeCast +
+// UnguardedDangerousCast). Complements existing inttype.dl GuardedIntIssue
+// which only detects PRESENCE of a guard around a cast; this rule detects
+// ABSENCE of a CFG-reaching guard before a narrowing or sign-extending cast.
+//
+// A dangerous cast (trunc with sw>dw, or sx) is flagged only when NO guard
+// on the cast's source variable precedes the cast on the control-flow graph.
+
+// ── Types ────────────────────────────────────────────────────────────
+.type Addr <: unsigned
+.type Sym  <: symbol
+.type Ver  <: unsigned
+
+// ── Input facts ──────────────────────────────────────────────────────
+.decl Cast(func: Sym, addr: Addr, dst: Sym, dst_ver: Ver,
+           src: Sym, src_ver: Ver, kind: Sym,
+           src_width: unsigned, dst_width: unsigned)
+.input Cast
+
+.decl Guard(func: Sym, addr: Addr, var: Sym, ver: Ver,
+            op: Sym, bound: Sym, bound_type: Sym)
+.input Guard
+
+.decl CFGEdge(func: Sym, from_addr: Addr, to_addr: Addr)
+.input CFGEdge
+
+.decl BnFlow(func: Sym, src_var: Sym, src_ver: Ver,
+             dst_var: Sym, dst_ver: Ver)
+.input BnFlow
+
+// ── CFG reachability (transitive) ────────────────────────────────────
+.decl BnCFGReach(func: Sym, from_addr: Addr, to_addr: Addr)
+
+BnCFGReach(f, a, b) :- CFGEdge(f, a, b).
+BnCFGReach(f, a, c) :- BnCFGReach(f, a, b), CFGEdge(f, b, c).
+
+// ── Guarded before cast ──────────────────────────────────────────────
+// A guard on the cast's source (or a flow-connected predecessor) that
+// reaches the cast on the CFG. We match the source variable directly,
+// and also match any variable whose value flows into the cast source.
+
+.decl BnGuardedBeforeCast(func: Sym, cast_addr: Addr,
+                          src: Sym, src_ver: Ver)
+
+// (a) Direct: the guard is on the exact same SSA version used at the cast.
+BnGuardedBeforeCast(f, ca, src, sver) :-
+    Cast(f, ca, _, _, src, sver, _, _, _),
+    Guard(f, ga, src, sver, _, _, _),
+    BnCFGReach(f, ga, ca).
+
+// (b) Via flow: a guard on some predecessor version that flows into the cast
+//     source. Covers phi-merge and copy chains.
+BnGuardedBeforeCast(f, ca, src, sver) :-
+    Cast(f, ca, _, _, src, sver, _, _, _),
+    BnFlow(f, gv, gver, src, sver),
+    Guard(f, ga, gv, gver, _, _, _),
+    BnCFGReach(f, ga, ca).
+
+// ── Unguarded dangerous cast ─────────────────────────────────────────
+.decl BnUnguardedDangerousCast(func: Sym, cast_addr: Addr,
+                               src: Sym, src_ver: Ver,
+                               dst: Sym, dst_ver: Ver,
+                               kind: Sym,
+                               src_width: unsigned, dst_width: unsigned)
+
+// Truncation: narrowing cast where width shrinks
+BnUnguardedDangerousCast(f, ca, src, sver, dst, dver, "trunc", sw, dw) :-
+    Cast(f, ca, dst, dver, src, sver, "trunc", sw, dw),
+    sw > dw,
+    !BnGuardedBeforeCast(f, ca, src, sver).
+
+// Sign-extend: signed widening
+BnUnguardedDangerousCast(f, ca, src, sver, dst, dver, "sx", sw, dw) :-
+    Cast(f, ca, dst, dver, src, sver, "sx", sw, dw),
+    !BnGuardedBeforeCast(f, ca, src, sver).
+
+.output BnGuardedBeforeCast
+.output BnUnguardedDangerousCast

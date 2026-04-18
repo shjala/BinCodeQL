@@ -1,0 +1,213 @@
+// BinCodeQL — Unbounded counter → memory index (ffmpeg H.264-class bugs)
+//
+// Ports NeuroLog rules from source_type_safety.dl (UnboundedCounter,
+// CounterUsedAsIndex) and their tainted variants. The enabling rule for
+// the ffmpeg H.264 slice-counter-vs-sentinel bug.
+//
+// Key MLIL-SSA adaptations:
+//   - NeuroLog's DefReachesUse(f,v,da,ua) ⇒ SSA version match via local Flow
+//   - Upper-bound guard ops: {slt, sle, ult, ule} (MLIL names, not C)
+//   - MemRead.offset is always "0" in bn_extract_facts.py (line 339), so we
+//     match counter-as-index by Use(f,v,ver,ua) co-occurring with
+//     MemRead/MemWrite at ua (not by offset column).
+//
+// Consumes: Def, Use, Call, ActualArg, Guard, ArithOp, MemRead, MemWrite,
+//           PhiSource, TaintedVar (from interproc.dl).
+
+// ── Types ────────────────────────────────────────────────────────────
+.type Addr <: unsigned
+.type Sym  <: symbol
+.type Ver  <: unsigned
+.type Idx  <: unsigned
+
+// ── Input facts ──────────────────────────────────────────────────────
+.decl Def(func: Sym, var: Sym, ver: Ver, addr: Addr)
+.input Def
+
+.decl Use(func: Sym, var: Sym, ver: Ver, addr: Addr)
+.input Use
+
+.decl Call(caller: Sym, callee: Sym, addr: Addr)
+.input Call
+
+.decl ActualArg(call_addr: Addr, arg_idx: Idx, param: Sym, var: Sym, ver: Ver)
+.input ActualArg
+
+.decl Guard(func: Sym, addr: Addr, var: Sym, ver: Ver,
+            op: Sym, bound: Sym, bound_type: Sym)
+.input Guard
+
+.decl ArithOp(func: Sym, addr: Addr, dst: Sym, dst_ver: Ver,
+              op: Sym, src: Sym, src_ver: Ver, operand: Sym)
+.input ArithOp
+
+.decl MemRead(func: Sym, addr: Addr, base: Sym, offset: Sym, size: Sym)
+.input MemRead
+
+.decl MemWrite(func: Sym, addr: Addr, target: Sym, mem_in: Ver, mem_out: Ver)
+.input MemWrite
+
+.decl PhiSource(func: Sym, var: Sym, def_ver: Ver, src_var: Sym, src_ver: Ver)
+.input PhiSource
+
+// TaintedVar is produced by interproc.dl; consumed here as input.
+.decl TaintedVar(func: Sym, var: Sym, ver: Ver, origin: Sym, ctx: Addr)
+.input TaintedVar
+
+// BnFlow is pre-computed by bn_flow.dl (shared across Bn* rules to avoid
+// re-deriving the transitive closure per file). Identity included.
+.decl BnFlow(func: Sym, src_var: Sym, src_ver: Ver, dst_var: Sym, dst_ver: Ver)
+.input BnFlow
+
+// ── Dangerous sinks (size-sensitive arg positions) ───────────────────
+.decl BnDangerousSink(func: Sym, arg_idx: Idx, risk: Sym)
+BnDangerousSink("malloc",  0, "allocation_size").
+BnDangerousSink("calloc",  0, "allocation_size").
+BnDangerousSink("calloc",  1, "allocation_size").
+BnDangerousSink("realloc", 1, "allocation_size").
+BnDangerousSink("alloca",  0, "allocation_size").
+BnDangerousSink("memcpy",  2, "buffer_overflow").
+BnDangerousSink("memmove", 2, "buffer_overflow").
+BnDangerousSink("memset",  2, "buffer_overflow").
+BnDangerousSink("strncpy", 2, "buffer_overflow").
+BnDangerousSink("strncat", 2, "buffer_overflow").
+BnDangerousSink("read",    2, "buffer_overflow").
+BnDangerousSink("recv",    2, "buffer_overflow").
+BnDangerousSink("fread",   1, "buffer_overflow").
+BnDangerousSink("fread",   2, "buffer_overflow").
+BnDangerousSink("__memcpy_chk",  2, "buffer_overflow").
+BnDangerousSink("__memmove_chk", 2, "buffer_overflow").
+
+// ════════════════════════════════════════════════════════════════════
+// RULE 1: HasUpperBound — variable has a proper upper-bound guard
+// ════════════════════════════════════════════════════════════════════
+// Upper-bound ops in MLIL-SSA: slt, sle, ult, ule. Note that bn_extract_facts.py
+// canonicalizes guards to "var OP bound" (const-on-left is flipped at
+// lines 184-190). So "var < const" reads as slt/ult directly.
+//
+// eq/ne are explicitly NOT upper bounds — this is the crux of the ffmpeg
+// H.264 case, where an unbounded counter is only checked against a sentinel
+// with eq, never against a proper bound.
+//
+// Use Flow-lifting so a guard on v#k also counts as a bound for any version
+// v#k+1 produced by IntraFlow-connected operations (common loop pattern:
+// check v#5, then add to produce v#6).
+
+.decl BnHasUpperBound(func: Sym, var: Sym, ver: Ver)
+
+BnHasUpperBound(f, v, ver) :-
+    Guard(f, _, v, ver, "slt", _, _).
+BnHasUpperBound(f, v, ver) :-
+    Guard(f, _, v, ver, "sle", _, _).
+BnHasUpperBound(f, v, ver) :-
+    Guard(f, _, v, ver, "ult", _, _).
+BnHasUpperBound(f, v, ver) :-
+    Guard(f, _, v, ver, "ule", _, _).
+
+// Flow-lifted: a guard on v#k covers v#m if v#k flows to v#m (same variable).
+BnHasUpperBound(f, v, mver) :-
+    Guard(f, _, v, gver, gop, _, _),
+    (gop = "slt" ; gop = "sle" ; gop = "ult" ; gop = "ule"),
+    BnFlow(f, v, gver, v, mver).
+
+// And the reverse direction: the guard may occur AFTER the increment
+// on the CFG (common while-loop shape: body; then check). If v#m flows
+// to the version being guarded, v#m is also (eventually) bounded.
+BnHasUpperBound(f, v, mver) :-
+    Guard(f, _, v, gver, gop, _, _),
+    (gop = "slt" ; gop = "sle" ; gop = "ult" ; gop = "ule"),
+    BnFlow(f, v, mver, v, gver).
+
+.output BnHasUpperBound
+
+// ════════════════════════════════════════════════════════════════════
+// RULE 2: UnboundedCounter — "add" with no upper-bound guard
+// ════════════════════════════════════════════════════════════════════
+// A variable that is incremented by addition and has NO proper upper
+// bound guard anywhere on its SSA-connected versions.
+
+.decl BnUnboundedCounter(func: Sym, var: Sym, ver: Ver, incr_addr: Addr)
+
+BnUnboundedCounter(f, v, ver, ia) :-
+    ArithOp(f, ia, v, ver, "add", _, _, _),
+    !BnHasUpperBound(f, v, ver).
+
+.output BnUnboundedCounter
+
+// ════════════════════════════════════════════════════════════════════
+// RULE 3: CounterUsedAsIndex — unbounded counter flows to memory access
+// ════════════════════════════════════════════════════════════════════
+// The counter's SSA version (or a Flow-successor) is Used at a memory
+// operation address. Four access kinds:
+//   - mem_read_use:  counter used at a MemRead address
+//   - mem_write_use: counter used at a MemWrite address
+//   - ptr_arith:     counter is an operand of a later ArithOp "add"
+//   - sink_arg:      counter passed as arg to a dangerous size-sensitive sink
+
+.decl BnCounterUsedAsIndex(func: Sym, var: Sym, ver: Ver,
+                           incr_addr: Addr, use_addr: Addr, kind: Sym)
+
+// mem_read_use: Use of counter (via Flow) at a MemRead address
+BnCounterUsedAsIndex(f, v, ver, ia, ua, "mem_read_use") :-
+    BnUnboundedCounter(f, v, ver, ia),
+    BnFlow(f, v, ver, uv, uver),
+    Use(f, uv, uver, ua),
+    MemRead(f, ua, _, _, _).
+
+// mem_write_use
+BnCounterUsedAsIndex(f, v, ver, ia, ua, "mem_write_use") :-
+    BnUnboundedCounter(f, v, ver, ia),
+    BnFlow(f, v, ver, uv, uver),
+    Use(f, uv, uver, ua),
+    MemWrite(f, ua, _, _, _).
+
+// ptr_arith: counter flows to an ArithOp "add" as either src or operand
+BnCounterUsedAsIndex(f, v, ver, ia, ua, "ptr_arith") :-
+    BnUnboundedCounter(f, v, ver, ia),
+    BnFlow(f, v, ver, uv, uver),
+    ArithOp(f, ua, _, _, "add", uv, uver, _).
+
+// sink_arg: counter appears at the argument slot of a dangerous sink
+BnCounterUsedAsIndex(f, v, ver, ia, ua, "sink_arg") :-
+    BnUnboundedCounter(f, v, ver, ia),
+    BnFlow(f, v, ver, uv, uver),
+    Call(f, callee, ua),
+    ActualArg(ua, idx, _, uv, uver),
+    BnDangerousSink(callee, idx, _).
+
+.output BnCounterUsedAsIndex
+
+// ════════════════════════════════════════════════════════════════════
+// RULE 4: TaintedUnboundedCounter
+// ════════════════════════════════════════════════════════════════════
+// Unbounded counter that is also tainted (attacker influences its value).
+
+.decl BnTaintedUnboundedCounter(func: Sym, var: Sym, ver: Ver,
+                                incr_addr: Addr, origin: Sym)
+
+BnTaintedUnboundedCounter(f, v, ver, ia, origin) :-
+    BnUnboundedCounter(f, v, ver, ia),
+    TaintedVar(f, v, ver, origin, _).
+
+// Also fire when any SSA-related version is tainted (the counter lineage
+// includes a tainted source).
+BnTaintedUnboundedCounter(f, v, ver, ia, origin) :-
+    BnUnboundedCounter(f, v, ver, ia),
+    BnFlow(f, tv, tver, v, ver),
+    TaintedVar(f, tv, tver, origin, _).
+
+.output BnTaintedUnboundedCounter
+
+// ════════════════════════════════════════════════════════════════════
+// RULE 5: TaintedCounterAsIndex — the exploitable pattern
+// ════════════════════════════════════════════════════════════════════
+
+.decl BnTaintedCounterAsIndex(func: Sym, var: Sym, ver: Ver,
+                              incr_addr: Addr, use_addr: Addr,
+                              kind: Sym, origin: Sym)
+
+BnTaintedCounterAsIndex(f, v, ver, ia, ua, kind, origin) :-
+    BnCounterUsedAsIndex(f, v, ver, ia, ua, kind),
+    BnTaintedUnboundedCounter(f, v, ver, ia, origin).
+
+.output BnTaintedCounterAsIndex

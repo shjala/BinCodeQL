@@ -1,0 +1,98 @@
+// BinCodeQL — Signedness inference helper (heuristic)
+//
+// MLIL-SSA strips per-variable signedness. Downstream rules ported from
+// NeuroLog (source-code analyzer) expect a ResolvedVarType-style signedness
+// column. We infer it from existing facts:
+//   - sx Cast / signed-comparison Guard → "signed"
+//   - zx Cast / unsigned-comparison Guard → "unsigned"
+//   - both present → "conflict"
+//   - neither present → "unknown"
+//
+// Downstream rules consume ONLY `BnSignedness(_, _, _, "signed")` — never
+// "conflict" or "unknown". Bias: precision over recall.
+
+// ── Types ────────────────────────────────────────────────────────────
+.type Addr <: unsigned
+.type Sym  <: symbol
+.type Ver  <: unsigned
+
+// ── Input facts ──────────────────────────────────────────────────────
+.decl Cast(func: Sym, addr: Addr, dst: Sym, dst_ver: Ver,
+           src: Sym, src_ver: Ver, kind: Sym,
+           src_width: unsigned, dst_width: unsigned)
+.input Cast
+
+.decl Guard(func: Sym, addr: Addr, var: Sym, ver: Ver,
+            op: Sym, bound: Sym, bound_type: Sym)
+.input Guard
+
+.decl VarWidth(func: Sym, var: Sym, ver: Ver, width: unsigned)
+.input VarWidth
+
+// ── Raw evidence ─────────────────────────────────────────────────────
+.decl BnInferredSigned(func: Sym, var: Sym, ver: Ver, evidence: Sym)
+.decl BnInferredUnsigned(func: Sym, var: Sym, ver: Ver, evidence: Sym)
+
+// sx cast source: inner value was interpreted as signed
+BnInferredSigned(f, v, ver, "cast_sx_src") :-
+    Cast(f, _, _, _, v, ver, "sx", _, _).
+
+// sx cast destination: dst holds a sign-extended value (still signed intent)
+BnInferredSigned(f, v, ver, "cast_sx_dst") :-
+    Cast(f, _, v, ver, _, _, "sx", _, _).
+
+// Signed-comparison guards
+BnInferredSigned(f, v, ver, "guard_slt") :-
+    Guard(f, _, v, ver, "slt", _, _).
+BnInferredSigned(f, v, ver, "guard_sle") :-
+    Guard(f, _, v, ver, "sle", _, _).
+BnInferredSigned(f, v, ver, "guard_sgt") :-
+    Guard(f, _, v, ver, "sgt", _, _).
+BnInferredSigned(f, v, ver, "guard_sge") :-
+    Guard(f, _, v, ver, "sge", _, _).
+
+// zx cast: explicit zero-extension — source was intended unsigned
+BnInferredUnsigned(f, v, ver, "cast_zx_src") :-
+    Cast(f, _, _, _, v, ver, "zx", _, _).
+BnInferredUnsigned(f, v, ver, "cast_zx_dst") :-
+    Cast(f, _, v, ver, _, _, "zx", _, _).
+
+// Unsigned-comparison guards
+BnInferredUnsigned(f, v, ver, "guard_ult") :-
+    Guard(f, _, v, ver, "ult", _, _).
+BnInferredUnsigned(f, v, ver, "guard_ule") :-
+    Guard(f, _, v, ver, "ule", _, _).
+BnInferredUnsigned(f, v, ver, "guard_ugt") :-
+    Guard(f, _, v, ver, "ugt", _, _).
+BnInferredUnsigned(f, v, ver, "guard_uge") :-
+    Guard(f, _, v, ver, "uge", _, _).
+
+.output BnInferredSigned
+.output BnInferredUnsigned
+
+// ── Resolved signedness (one row per known (func,var,ver)) ──────────
+.decl BnSignedness(func: Sym, var: Sym, ver: Ver, sign: Sym)
+
+// Conflict: both signals present — treat as non-signed (conservative).
+BnSignedness(f, v, ver, "conflict") :-
+    BnInferredSigned(f, v, ver, _),
+    BnInferredUnsigned(f, v, ver, _).
+
+// Pure signed signal.
+BnSignedness(f, v, ver, "signed") :-
+    BnInferredSigned(f, v, ver, _),
+    !BnInferredUnsigned(f, v, ver, _).
+
+// Pure unsigned signal.
+BnSignedness(f, v, ver, "unsigned") :-
+    BnInferredUnsigned(f, v, ver, _),
+    !BnInferredSigned(f, v, ver, _).
+
+// No signal — mark as unknown so downstream rules can explicitly filter it out.
+// Anchor to VarWidth so we only emit rows for variables we know about.
+BnSignedness(f, v, ver, "unknown") :-
+    VarWidth(f, v, ver, _),
+    !BnInferredSigned(f, v, ver, _),
+    !BnInferredUnsigned(f, v, ver, _).
+
+.output BnSignedness

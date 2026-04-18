@@ -1,0 +1,33 @@
+// BinCodeQL — Unguarded tainted sink (structural consolidation)
+//
+// Ports NeuroLog source_memsafety.dl RULE 1:
+//   UnguardedTaintedSink = TaintedSink \ GuardedSink
+//
+// The consumer of interproc.dl's outputs (TaintedSink, GuardedSink) produces
+// a first-class "this is actionable" relation for triage. Not a new analysis
+// — just a structural subtraction that's easier to consume downstream.
+
+// ── Types ────────────────────────────────────────────────────────────
+.type Addr <: unsigned
+.type Sym  <: symbol
+.type Idx  <: unsigned
+
+// ── Input (from interproc.dl output, recycled via copy to facts/) ───
+.decl TaintedSink(caller: Sym, callee: Sym, call_addr: Addr,
+                  arg_idx: Idx, tainted_var: Sym, risk: Sym, origin: Sym)
+.input TaintedSink
+
+.decl GuardedSink(caller: Sym, callee: Sym, call_addr: Addr,
+                  guard_var: Sym, guard_op: Sym, guard_bound: Sym)
+.input GuardedSink
+
+// ── BnUnguardedTaintedSink ──────────────────────────────────────────
+.decl BnUnguardedTaintedSink(caller: Sym, callee: Sym, call_addr: Addr,
+                             arg_idx: Idx, tainted_var: Sym,
+                             risk: Sym, origin: Sym)
+
+BnUnguardedTaintedSink(caller, callee, ca, idx, tv, risk, origin) :-
+    TaintedSink(caller, callee, ca, idx, tv, risk, origin),
+    !GuardedSink(caller, callee, ca, _, _, _).
+
+.output BnUnguardedTaintedSink
