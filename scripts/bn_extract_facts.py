@@ -279,22 +279,75 @@ COMPARISON_FLIP_MAP = {
 }
 
 
+def _resolve_const_addr(bv, target_addr):
+    """Map a code/data constant address to its symbol name."""
+    funcs = bv.get_functions_containing(target_addr)
+    if funcs:
+        return funcs[0].name
+    sym = bv.get_symbol_at(target_addr)
+    if sym:
+        return sym.name
+    return None
+
+
+def _resolve_var_through_global_load(bv, mlil_func, ssa_var):
+    """Trace an SSA call-target var back to a global function-pointer load.
+
+    libxml2 / glib / SQLite / OpenSSL and similar libraries install allocators
+    and I/O as globals:  xmlMallocFunc xmlMalloc = malloc;
+    At binary level a `(*xmlMalloc)(size)` compiles to:
+        rax = [<addr_of_xmlMalloc_global>]
+        call rax
+    i.e. `MLIL_CALL_SSA(dest=MLIL_VAR_SSA, ...)` where the var is defined by
+    `MLIL_LOAD_SSA(MLIL_CONST_PTR)`. Returning the global's symbol name
+    ("xmlMalloc") turns the call into a named one that every existing
+    signature-matching rule picks up.
+    """
+    try:
+        defn = mlil_func.get_ssa_var_definition(ssa_var)
+    except Exception:
+        return None
+    if defn is None:
+        return None
+
+    # defn is an MLIL-SSA instruction. For MLIL_SET_VAR_SSA, src is the RHS.
+    src = getattr(defn, "src", None)
+    if src is None:
+        return None
+
+    if src.operation != MLIL.MLIL_LOAD_SSA:
+        return None
+
+    # The load address must be a const pointer, an import, or a symbol ref.
+    # BN uses MLIL_IMPORT for imported globals (e.g. xmlRealloc resolved to
+    # a GOT entry) and MLIL_CONST_PTR for data-section globals.
+    load_addr_expr = src.src
+    if load_addr_expr.operation in (MLIL.MLIL_CONST_PTR, MLIL.MLIL_CONST,
+                                    MLIL.MLIL_IMPORT):
+        global_addr = load_addr_expr.constant
+        sym = bv.get_symbol_at(global_addr)
+        if sym and sym.name:
+            return sym.name
+    return None
+
+
 def resolve_callee(bv, insn):
     """Resolve the callee of a CALL instruction to a function name."""
     dest = insn.dest
     if dest.operation == MLIL.MLIL_CONST_PTR or dest.operation == MLIL.MLIL_CONST:
         target_addr = dest.constant
-        funcs = bv.get_functions_containing(target_addr)
-        if funcs:
-            return funcs[0].name
-        # Check imported symbol
-        sym = bv.get_symbol_at(target_addr)
-        if sym:
-            return sym.name
-        return hex(target_addr)
+        name = _resolve_const_addr(bv, target_addr)
+        return name if name is not None else hex(target_addr)
     if dest.operation == MLIL.MLIL_IMPORT:
         return dest.constant  # import address
-    # Indirect call — can't resolve statically
+    # Indirect through an SSA var — try to resolve through a global load.
+    if dest.operation == MLIL.MLIL_VAR_SSA:
+        try:
+            name = _resolve_var_through_global_load(bv, insn.function, dest.src)
+            if name:
+                return name
+        except Exception:
+            pass
     return "<indirect>"
 
 
