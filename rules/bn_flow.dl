@@ -1,24 +1,61 @@
 // BinCodeQL — Shared intraprocedural data-flow pre-computation
 //
 // Computes BnFlow once and emits it for consumption by downstream Bn* rules.
-// Replaces the per-file inline Flow closure that was a major bottleneck in
-// Phase 1 (bn_counter_oob.dl 6m36s, bn_alloc_copy.dl 3m22s on the ffmpeg
-// h264_decode_frame function: 2853 PhiSources × 3768 Uses transitive).
 //
-// Usage:
-//   1. Run this file first:  souffle -F facts/ -D output/ rules/bn_flow.dl
-//   2. Copy output/BnFlow.csv → facts/BnFlow.facts
-//   3. Run bn_counter_oob.dl / bn_alloc_copy.dl which declare
-//      `.input BnFlow` and skip re-deriving the closure.
+// Design evolution (2026-04-20):
 //
-// Includes identity `BnFlow(v, ver, v, ver)` so downstream rules can use
-// a uniform pattern `BnFlow(v, ver, uv, uver), Use(uv, uver, ua)` that
-// matches both direct uses and flow-reachable uses.
+//   V1 (original): unbounded transitive closure on Use-Def + PhiSource
+//   edges. Worked for functions up to ~1K SSA vars, but blew up on
+//   dense-phi functions like ff_h264_filter_mb (5309 Defs, 4877 PhiSources)
+//   — no output within 300s+ timeouts regardless of eval mode.
+//
+//   V2 (depth-bounded): unroll the closure to fixed MAX_HOPS. Didn't
+//   solve it; per-hop fanout is the real cost driver, not chain length.
+//
+//   V3 (current): two-tier, size-gated.
+//     - BnFlow1 — one-hop flow, always computed, cheap (tractable for any
+//       function size; completes in <1s on 11k Uses + 5k Defs).
+//     - BnFlowH — hop-counted TC up to MAX_HOPS, ONLY for functions
+//       whose Def count is below FUNC_SIZE_GATE. Large functions get
+//       shallow flow (BnFlow1 only) plus identity.
+//
+// Philosophy: cheap-first analysis, per the "lighter analyses filter
+// noise before heavier analyses run" pattern. BnFlow1 is the always-on
+// first tier. Downstream rules that need multi-hop closure on large
+// functions can build their own demand-driven closure seeded on the
+// small number of vars they actually care about (alloc return values,
+// counter increment targets, etc.) — typically much cheaper than the
+// global TC.
+//
+// Downstream compatibility: the `BnFlow` projection column shape is
+// unchanged from V1, so no downstream rule file needs to be rewritten.
+// Rules that would have caught a 3-hop flow inside a 5K-var function
+// may now miss it — a documented precision tradeoff in exchange for
+// scalability. The LLM layer can compensate by inspecting large
+// functions with MCP tools directly.
 
 // ── Types ────────────────────────────────────────────────────────────
 .type Addr <: unsigned
 .type Sym  <: symbol
 .type Ver  <: unsigned
+.type Hops <: unsigned
+
+// MAX_HOPS — the depth bound of the transitive closure on
+// small/medium functions. 10 is generous relative to typical real-world
+// flow chains (median 3, long tail 6-8). Edit or override via a
+// Souffle preprocessor define.
+#ifndef MAX_HOPS
+#define MAX_HOPS 10
+#endif
+
+// FUNC_SIZE_GATE — Def-count threshold above which a function is
+// treated as "large" and skips multi-hop TC. 2000 leaves all typical
+// C functions and small-to-medium codec kernels inside the TC bucket;
+// only genuinely large functions (H.264 motion-compensation inlines,
+// protobuf generated code, etc.) fall back to one-hop flow.
+#ifndef FUNC_SIZE_GATE
+#define FUNC_SIZE_GATE 2000
+#endif
 
 // ── Input facts ──────────────────────────────────────────────────────
 .decl Def(func: Sym, var: Sym, ver: Ver, addr: Addr)
@@ -30,28 +67,79 @@
 .decl PhiSource(func: Sym, var: Sym, def_ver: Ver, src_var: Sym, src_ver: Ver)
 .input PhiSource
 
-// ── BnFlow ───────────────────────────────────────────────────────────
-.decl BnFlow(func: Sym, src_var: Sym, src_ver: Ver, dst_var: Sym, dst_ver: Ver)
+// ── Function-size classification ─────────────────────────────────────
+// Count Defs per function; classify above FUNC_SIZE_GATE as "large".
+
+.decl FuncDefCount(func: Sym, n: number)
+FuncDefCount(f, n) :-
+    Def(f, _, _, _),
+    n = count : { Def(f, _, _, _) }.
+
+.decl FuncIsLarge(func: Sym)
+FuncIsLarge(f) :- FuncDefCount(f, n), n > FUNC_SIZE_GATE.
+
+.output FuncDefCount
+.output FuncIsLarge
+
+// ── One-hop base flow: always computed, always cheap ─────────────────
+
+.decl BnFlow1(func: Sym, src_var: Sym, src_ver: Ver,
+              dst_var: Sym, dst_ver: Ver)
 
 // Direct assignment: dst is defined at an address where src is used.
-BnFlow(f, sv, sver, dv, dver) :-
+BnFlow1(f, sv, sver, dv, dver) :-
     Use(f, sv, sver, a),
     Def(f, dv, dver, a),
     (sv != dv ; sver != dver).
 
 // Phi merge: (src_var, src_ver) flows into phi's (def_var, def_ver).
-BnFlow(f, sv, sver, dv, dver) :-
+BnFlow1(f, sv, sver, dv, dver) :-
     PhiSource(f, dv, dver, sv, sver).
 
-// Identity: every defined SSA variable flows to itself. Enables the
-// uniform downstream pattern above.
+.output BnFlow1
+
+// ── Hop-counted TC for small/medium functions only ───────────────────
+// Gated on !FuncIsLarge so this closure never materializes for huge
+// functions (where per-hop fanout would explode).
+
+.decl BnFlowH(func: Sym, src_var: Sym, src_ver: Ver,
+              dst_var: Sym, dst_ver: Ver, hops: Hops)
+
+// Hop 1 — promote BnFlow1 into the hop-counted relation (only for
+// small-medium functions).
+BnFlowH(f, sv, sver, dv, dver, 1) :-
+    BnFlow1(f, sv, sver, dv, dver),
+    !FuncIsLarge(f).
+
+// Extend by one hop at a time, capped at MAX_HOPS. Reads from
+// BnFlowH on the left, BnFlow1 on the right — this keeps the join
+// degree bounded (BnFlow1 has fixed size; we only grow BnFlowH).
+BnFlowH(f, sv, sver, dv, dver, h2) :-
+    BnFlowH(f, sv, sver, mid, mver, h1),
+    h1 < MAX_HOPS,
+    BnFlow1(f, mid, mver, dv, dver),
+    h2 = h1 + 1,
+    (sv != dv ; sver != dver).
+
+// ── Unified BnFlow projection ────────────────────────────────────────
+// Downstream rules use this un-hopped shape; the internal tiering is
+// invisible to them.
+
+.decl BnFlow(func: Sym, src_var: Sym, src_ver: Ver,
+             dst_var: Sym, dst_ver: Ver)
+
+// Identity for ALL functions (including large ones) — lets rules use
+// the uniform `BnFlow(v, ver, v, ver)` pattern.
 BnFlow(f, v, ver, v, ver) :-
     Def(f, v, ver, _).
 
-// Transitive closure.
+// Small/medium functions: multi-hop TC
 BnFlow(f, sv, sver, dv, dver) :-
-    BnFlow(f, sv, sver, mid, mver),
-    BnFlow(f, mid, mver, dv, dver),
-    (sv != dv ; sver != dver).
+    BnFlowH(f, sv, sver, dv, dver, _).
+
+// Large functions: one-hop only (BnFlow1 directly — no multi-hop).
+BnFlow(f, sv, sver, dv, dver) :-
+    BnFlow1(f, sv, sver, dv, dver),
+    FuncIsLarge(f).
 
 .output BnFlow

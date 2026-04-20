@@ -35,6 +35,22 @@
 .decl MemWrite(func: Sym, addr: Addr, target: Sym, mem_in: Ver, mem_out: Ver)
 .input MemWrite
 
+// Store width in bytes for MLIL_STORE_SSA. Separate relation (not a 6th
+// column on MemWrite) so existing consumers don't break on arity change.
+// Enables detection of implicit truncation when a wide value is stored
+// into a narrow memory slot (32-bit counter → 16-bit table entry).
+.decl MemWriteSize(func: Sym, addr: Addr, size: unsigned)
+.input MemWriteSize
+
+// SSA variables that contribute specifically to the stored-VALUE
+// expression of a MLIL_STORE_SSA (distinct from Use facts at the same
+// address, which also include destination-address components like the
+// base pointer). Rules that reason about the stored value's width,
+// taint, or signedness should join on MemWriteValue rather than Use to
+// avoid false-positives from pointer-width address components.
+.decl MemWriteValue(func: Sym, addr: Addr, val_var: Sym, val_ver: Ver)
+.input MemWriteValue
+
 .decl FieldRead(func: Sym, addr: Addr, base: Sym, field: Sym)
 .input FieldRead
 
@@ -48,6 +64,23 @@
 // Emitted when a function receives a pointer to a local as an arg
 .decl CallAddrArg(call_addr: Addr, arg_idx: Idx, target: Sym)
 .input CallAddrArg
+
+// Call argument that is a literal integer constant (e.g. the `-1` in
+// memset(buf, -1, n)). Emitted for MLIL_CONST / MLIL_CONST_PTR args.
+// Value is stored as a symbol to accommodate signed, unsigned, and
+// hex representations without losing information.
+.decl CallArgConst(call_addr: Addr, arg_idx: Idx, value: Sym)
+.input CallArgConst
+
+// Heap-allocation call site with its requested size.
+// - size_var:    SSA name of the size variable, else "_"
+// - size_const:  literal byte count when size is constant, else "0"
+// - elem_width:  inferred element width — the constant factor when the
+//                size is `n * K` (e.g. malloc(n * 2) → 2), or the
+//                calloc/reallocarray elem_size arg. 0 if unknown.
+.decl AllocSite(call_addr: Addr, func: Sym, size_var: Sym,
+                size_const: Sym, elem_width: unsigned)
+.input AllocSite
 
 .decl CFGEdge(func: Sym, from_addr: Addr, to_addr: Addr)
 .input CFGEdge

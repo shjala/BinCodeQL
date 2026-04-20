@@ -61,6 +61,8 @@ User Query → LLM Agent (ADK)
 | `rules/bn_loop_bound.dl` | Tainted loop-bound detection (proper loop-continuation op set) |
 | `rules/bn_unguarded_cast.dl` | Narrowing/sign-extend cast without CFG-reaching guard on source |
 | `rules/bn_arith_overflow.dl` | Narrow signed arith overflow (≤4B add/mul/lsl) + sink coupling |
+| `rules/bn_width_mismatch.dl` | Wide value stored into narrower slot (32-bit counter → 16-bit table element) |
+| `rules/bn_sentinel_init.dl` | memset sentinel (-1/0xFF/0xFFFF) meets unbounded counter (H.264 slice_table class) |
 | `rules/bn_findings.dl` | Unified BnFinding aggregation (primary reporting relation) |
 
 ## Fact Schema
@@ -87,6 +89,9 @@ User Query → LLM Agent (ADK)
 | ArithOp | func, addr, dst, dst_ver, op, src, src_ver, operand |
 | Cast | func, addr, dst, dst_ver, src, src_ver, kind, src_width, dst_width |
 | VarWidth | func, var, ver, width |
+| CallArgConst | call_addr, arg_idx, value (literal constant args, e.g. -1 in memset) |
+| MemWriteSize | func, addr, size (store width in bytes, for truncation detection) |
+| AllocSite | call_addr, func, size_var, size_const, elem_width |
 | EntryTaint | func, param_idx (user-specified attack surface) |
 | BufferWriteSource | func, arg_idx |
 | TaintKill | func, arg_idx |

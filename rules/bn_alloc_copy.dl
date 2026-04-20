@@ -41,26 +41,96 @@
 .decl BnFlow(func: Sym, src_var: Sym, src_ver: Ver, dst_var: Sym, dst_ver: Ver)
 .input BnFlow
 
-// ── Allocator signatures: (func, size_arg_idx) ───────────────────────
+// ── Allocator signatures: (callee, size_arg_idx) ─────────────────────
+// Kept in sync with _ALLOC_CALLEES in scripts/bn_extract_facts.py so
+// BnAllocSite and the extractor-emitted AllocSite cover the same set.
+// Listing each (count, elem_size) arg index separately for calloc-like
+// funcs lets downstream rules match either side.
 .decl BnAllocFunc(callee: Sym, size_arg: Idx)
-BnAllocFunc("malloc",       0).
-BnAllocFunc("calloc",       0).
-BnAllocFunc("calloc",       1).
-BnAllocFunc("realloc",      1).
-BnAllocFunc("reallocarray", 1).
-BnAllocFunc("reallocarray", 2).
-BnAllocFunc("alloca",       0).
-BnAllocFunc("valloc",       0).
-BnAllocFunc("memalign",     1).
-BnAllocFunc("xmalloc",      0).
-BnAllocFunc("g_malloc",     0).
-BnAllocFunc("g_try_malloc", 0).
-// libxml2 allocator wrappers
+// Standard libc
+BnAllocFunc("malloc",         0).
+BnAllocFunc("xmalloc",        0).
+BnAllocFunc("calloc",         0).
+BnAllocFunc("calloc",         1).
+BnAllocFunc("realloc",        1).
+BnAllocFunc("reallocarray",   1).
+BnAllocFunc("reallocarray",   2).
+BnAllocFunc("reallocf",       1).
+BnAllocFunc("aligned_alloc",  1).
+BnAllocFunc("memalign",       1).
+BnAllocFunc("posix_memalign", 2).
+BnAllocFunc("valloc",         0).
+BnAllocFunc("pvalloc",        0).
+BnAllocFunc("alloca",         0).
+BnAllocFunc("strdup",         0).
+BnAllocFunc("strndup",        1).
+// C++ operator new (mangled)
+BnAllocFunc("operator new",   0).
+BnAllocFunc("operator new[]", 0).
+BnAllocFunc("_Znwm",          0).
+BnAllocFunc("_Znam",          0).
+BnAllocFunc("_Znwj",          0).
+BnAllocFunc("_Znaj",          0).
+// glib
+BnAllocFunc("g_malloc",       0).
+BnAllocFunc("g_malloc0",      0).
+BnAllocFunc("g_try_malloc",   0).
+BnAllocFunc("g_try_malloc0",  0).
+BnAllocFunc("g_realloc",      1).
+BnAllocFunc("g_try_realloc",  1).
+BnAllocFunc("g_new",          0).
+BnAllocFunc("g_new0",         0).
+// libxml2
 BnAllocFunc("xmlMalloc",       0).
 BnAllocFunc("xmlMallocAtomic", 0).
 BnAllocFunc("xmlMemMalloc",    0).
 BnAllocFunc("xmlRealloc",      1).
 BnAllocFunc("xmlMemRealloc",   1).
+// Windows heap APIs
+BnAllocFunc("HeapAlloc",     2).
+BnAllocFunc("HeapReAlloc",   3).
+BnAllocFunc("LocalAlloc",    1).
+BnAllocFunc("LocalReAlloc",  1).
+BnAllocFunc("GlobalAlloc",   1).
+BnAllocFunc("GlobalReAlloc", 1).
+BnAllocFunc("VirtualAlloc",  1).
+BnAllocFunc("VirtualAllocEx",2).
+BnAllocFunc("CoTaskMemAlloc",0).
+BnAllocFunc("SysAllocString",0).
+// Linux kernel / drivers
+BnAllocFunc("kmalloc",            0).
+BnAllocFunc("kzalloc",            0).
+BnAllocFunc("kcalloc",            0).
+BnAllocFunc("kcalloc",            1).
+BnAllocFunc("krealloc",           1).
+BnAllocFunc("vmalloc",            0).
+BnAllocFunc("vzalloc",            0).
+BnAllocFunc("devm_kmalloc",       1).
+BnAllocFunc("devm_kzalloc",       1).
+BnAllocFunc("kmem_cache_alloc",   0).
+BnAllocFunc("kmem_cache_zalloc",  0).
+// FFmpeg / libav — size semantics mirror libc: av_calloc/av_mallocz_array
+// take (nmemb, size), av_malloc/av_mallocz take (size), av_realloc/etc
+// take (ptr, size).
+BnAllocFunc("av_malloc",          0).
+BnAllocFunc("av_mallocz",         0).
+BnAllocFunc("av_calloc",          0).
+BnAllocFunc("av_calloc",          1).
+BnAllocFunc("av_malloc_array",    0).
+BnAllocFunc("av_malloc_array",    1).
+BnAllocFunc("av_mallocz_array",   0).
+BnAllocFunc("av_mallocz_array",   1).
+BnAllocFunc("av_realloc",         1).
+BnAllocFunc("av_realloc_f",       1).
+BnAllocFunc("av_realloc_f",       2).
+BnAllocFunc("av_reallocp",        1).
+BnAllocFunc("av_reallocp_array",  1).
+BnAllocFunc("av_reallocp_array",  2).
+BnAllocFunc("av_fast_malloc",     2).
+BnAllocFunc("av_fast_mallocz",    2).
+BnAllocFunc("av_fast_realloc",    2).
+BnAllocFunc("av_strdup",          0).
+BnAllocFunc("av_strndup",         1).
 
 // ── Copy signatures: (func, dst_arg_idx, size_arg_idx) ───────────────
 .decl BnCopyFunc(callee: Sym, dst_arg: Idx, size_arg: Idx)

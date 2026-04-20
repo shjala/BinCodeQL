@@ -1,0 +1,129 @@
+// BinCodeQL — Width mismatch on memory store (new vulnerability class)
+//
+// Detects implicit truncation when a wide SSA value is stored into a
+// narrower memory slot — the root-cause shape behind several CVEs,
+// including the FFmpeg H.264 slice_table sentinel collision (a 32-bit
+// counter written into a uint16_t table).
+//
+// Two-step structure:
+//   BnNarrowStore       — any MLIL store whose value is wider than the
+//                          store size (pure width anomaly).
+//   BnWidthMismatchStore — BnNarrowStore correlated with an AllocSite
+//                          whose `elem_width` is smaller than the value
+//                          width (the "wide value into narrow heap slot"
+//                          refinement).
+//
+// Consumes: MemWriteSize, Use, VarWidth, AllocSite, BnAllocSite, BnFlow,
+// BnUnboundedCounter (optional — for severity bump).
+
+// ── Types ────────────────────────────────────────────────────────────
+.type Addr <: unsigned
+.type Sym  <: symbol
+.type Ver  <: unsigned
+.type Idx  <: unsigned
+
+// ── Input facts ──────────────────────────────────────────────────────
+.decl Use(func: Sym, var: Sym, ver: Ver, addr: Addr)
+.input Use
+
+.decl VarWidth(func: Sym, var: Sym, ver: Ver, width: unsigned)
+.input VarWidth
+
+.decl MemWriteSize(func: Sym, addr: Addr, size: unsigned)
+.input MemWriteSize
+
+// MemWriteValue — SSA vars in the stored-value expression, distinct
+// from pointer-width vars used in the destination address. Emitted by
+// the extractor's collect_value_vars helper at every MLIL_STORE_SSA.
+.decl MemWriteValue(func: Sym, addr: Addr, val_var: Sym, val_ver: Ver)
+.input MemWriteValue
+
+.decl AllocSite(call_addr: Addr, func: Sym, size_var: Sym,
+                size_const: Sym, elem_width: unsigned)
+.input AllocSite
+
+.decl BnFlow(func: Sym, src_var: Sym, src_ver: Ver,
+             dst_var: Sym, dst_ver: Ver)
+.input BnFlow
+
+// BnAllocSite is produced by bn_alloc_copy.dl; staged into facts/ by the
+// pipeline before this rule runs.
+.decl BnAllocSite(func: Sym, call_addr: Addr,
+                  buf: Sym, buf_ver: Ver,
+                  size_var: Sym, size_ver: Ver, alloc_func: Sym)
+.input BnAllocSite
+
+// BnUnboundedCounter is produced by bn_counter_oob.dl; staged into facts/.
+.decl BnUnboundedCounter(func: Sym, var: Sym, ver: Ver, incr_addr: Addr)
+.input BnUnboundedCounter
+
+// ════════════════════════════════════════════════════════════════════
+// RULE 1: BnNarrowStore — pure width anomaly on any store.
+// ════════════════════════════════════════════════════════════════════
+// Condition: at a MemWriteSize of `S` bytes, some variable used at the
+// same address has VarWidth `W` with `W > S`. The variable is either the
+// value being stored or a component of the destination expression; the
+// rule is intentionally conservative because the address-component case
+// also warrants inspection (e.g. pointer-width misuse).
+//
+// Filter: S <= 4 — narrow stores (1, 2, or 4 bytes). An 8-byte store
+// cannot truncate anything meaningful in our schema.
+
+.decl BnNarrowStore(func: Sym, addr: Addr,
+                    val_var: Sym, val_ver: Ver,
+                    store_size: unsigned, val_width: unsigned)
+
+BnNarrowStore(f, a, v, ver, ss, vw) :-
+    MemWriteSize(f, a, ss),
+    ss <= 4,
+    MemWriteValue(f, a, v, ver),
+    v != "mem",
+    VarWidth(f, v, ver, vw),
+    vw > ss,
+    vw <= 8.
+
+.output BnNarrowStore
+
+// ════════════════════════════════════════════════════════════════════
+// RULE 2: BnWidthMismatchStore — alloc-correlated truncation.
+// ════════════════════════════════════════════════════════════════════
+// A BnNarrowStore whose destination base traces back (via BnFlow) to an
+// AllocSite with `elem_width < val_width`. This is the "32-bit counter
+// stored into a uint16_t[] slot" pattern behind the H.264 slice_table
+// bug and related CVEs.
+
+.decl BnWidthMismatchStore(func: Sym, addr: Addr,
+                           val_var: Sym, val_ver: Ver,
+                           store_size: unsigned, val_width: unsigned,
+                           alloc_addr: Addr, elem_width: unsigned)
+
+BnWidthMismatchStore(f, sa, vv, vver, ss, vw, aa, ew) :-
+    BnNarrowStore(f, sa, vv, vver, ss, vw),
+    BnAllocSite(f, aa, buf, bver, _, _, _),
+    AllocSite(aa, _, _, _, ew),
+    ew > 0,
+    ew < vw,
+    BnFlow(f, buf, bver, dst, dver),
+    Use(f, dst, dver, sa).
+
+.output BnWidthMismatchStore
+
+// ════════════════════════════════════════════════════════════════════
+// RULE 3: BnWidthMismatchCounter — high-severity subset.
+// ════════════════════════════════════════════════════════════════════
+// When the stored value is itself an unbounded counter, we have the
+// exploitable shape: counter can reach a value that doesn't fit the
+// element, producing a silent truncation that software below does not
+// expect.
+
+.decl BnWidthMismatchCounter(func: Sym, addr: Addr,
+                             val_var: Sym, val_ver: Ver,
+                             store_size: unsigned, val_width: unsigned,
+                             alloc_addr: Addr, elem_width: unsigned,
+                             incr_addr: Addr)
+
+BnWidthMismatchCounter(f, sa, vv, vver, ss, vw, aa, ew, ia) :-
+    BnWidthMismatchStore(f, sa, vv, vver, ss, vw, aa, ew),
+    BnUnboundedCounter(f, vv, vver, ia).
+
+.output BnWidthMismatchCounter

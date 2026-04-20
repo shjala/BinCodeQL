@@ -67,6 +67,25 @@
                          op: Sym, origin: Sym, taint_side: Sym)
 .input BnTaintedLoopBound
 
+.decl BnWidthMismatchStore(func: Sym, addr: Addr,
+                           val_var: Sym, val_ver: Ver,
+                           store_size: unsigned, val_width: unsigned,
+                           alloc_addr: Addr, elem_width: unsigned)
+.input BnWidthMismatchStore
+
+.decl BnWidthMismatchCounter(func: Sym, addr: Addr,
+                             val_var: Sym, val_ver: Ver,
+                             store_size: unsigned, val_width: unsigned,
+                             alloc_addr: Addr, elem_width: unsigned,
+                             incr_addr: Addr)
+.input BnWidthMismatchCounter
+
+.decl BnSentinelCollisionRisk(func: Sym, init_addr: Addr,
+                              cmp_addr: Addr, buf: Sym,
+                              counter: Sym, counter_ver: Ver,
+                              sentinel_val: Sym, origin: Sym, tier: Sym)
+.input BnSentinelCollisionRisk
+
 // ── Unified finding ──────────────────────────────────────────────────
 // severity: "high" (tainted + exploitable-shape) or "medium" (structural).
 // category: short tag for triage filtering.
@@ -118,5 +137,41 @@ BnFinding(f, ca, "medium", cat("unguarded_cast_", kind), src,
 BnFinding(f, ga, "medium", "tainted_loop_bound", lv,
           cat(op, cat(" ", cat(taint_side, cat(" origin=", origin))))) :-
     BnTaintedLoopBound(f, ga, lv, _, _, _, op, origin, taint_side).
+
+// Width-mismatch store into narrow heap slot — high when stored value
+// is an unbounded counter (exploitable), medium otherwise (structural).
+BnFinding(f, sa, "high", "width_mismatch_counter", vv,
+          cat("val_w=", cat(to_string(vw),
+          cat(" elem_w=", cat(to_string(ew),
+          cat(" store_w=", cat(to_string(ss),
+          cat(" alloc@", to_string(aa))))))))) :-
+    BnWidthMismatchCounter(f, sa, vv, _, ss, vw, aa, ew, _).
+
+BnFinding(f, sa, "medium", "width_mismatch_store", vv,
+          cat("val_w=", cat(to_string(vw),
+          cat(" elem_w=", cat(to_string(ew),
+          cat(" store_w=", cat(to_string(ss),
+          cat(" alloc@", to_string(aa))))))))) :-
+    BnWidthMismatchStore(f, sa, vv, vver, ss, vw, aa, ew),
+    !BnWidthMismatchCounter(f, sa, vv, vver, ss, vw, aa, ew, _).
+
+// Sentinel-collision — high when eq-guarded + tainted counter,
+// medium when eq-guarded any counter, low when bare structural.
+BnFinding(f, ia, "high", "sentinel_collision", buf,
+          cat("sentinel=", cat(sval,
+          cat(" counter=", cat(cv,
+          cat(" origin=", origin)))))) :-
+    BnSentinelCollisionRisk(f, ia, _, buf, cv, _, sval, origin,
+                            "eq_guarded_tainted").
+
+BnFinding(f, ia, "medium", "sentinel_collision", buf,
+          cat("sentinel=", cat(sval,
+          cat(" counter=", cv)))) :-
+    BnSentinelCollisionRisk(f, ia, _, buf, cv, _, sval, _, "eq_guarded").
+
+BnFinding(f, ia, "low", "sentinel_collision_structural", buf,
+          cat("sentinel=", cat(sval,
+          cat(" counter=", cv)))) :-
+    BnSentinelCollisionRisk(f, ia, _, buf, cv, _, sval, _, "structural").
 
 .output BnFinding

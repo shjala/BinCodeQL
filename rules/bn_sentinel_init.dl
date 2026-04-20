@@ -1,0 +1,237 @@
+// BinCodeQL — Sentinel-initialized buffer meets unbounded counter
+//
+// Detects the classic pattern behind the FFmpeg H.264 slice_table CVE:
+//   1. A buffer with narrow elements (e.g. uint16_t[]) is initialized
+//      by memset(buf, -1, n) → every element becomes the max-value
+//      sentinel (0xFFFF for 16-bit).
+//   2. A counter increments without an upper-bound guard and can
+//      reach a value equal to the sentinel.
+//   3. Equality-compare against a buffer element silently matches the
+//      sentinel, producing an invalid-neighbor OOB write or read.
+//
+// The Datalog layer surfaces the co-occurrence. The LLM layer is
+// responsible for validating the value-range reasoning (does the
+// counter actually reach the sentinel? is the narrow element width
+// actually smaller than the counter width?) via MCP / reflection.
+//
+// Consumes: Call, CallArgConst, ActualArg, AllocSite, BnAllocSite,
+// BnFlow, BnUnboundedCounter, BnTaintedUnboundedCounter, Guard.
+
+// ── Types ────────────────────────────────────────────────────────────
+.type Addr <: unsigned
+.type Sym  <: symbol
+.type Ver  <: unsigned
+.type Idx  <: unsigned
+
+// ── Input facts ──────────────────────────────────────────────────────
+.decl Call(caller: Sym, callee: Sym, addr: Addr)
+.input Call
+
+.decl CallArgConst(call_addr: Addr, arg_idx: Idx, value: Sym)
+.input CallArgConst
+
+.decl ActualArg(call_addr: Addr, arg_idx: Idx, param: Sym,
+                var: Sym, ver: Ver)
+.input ActualArg
+
+.decl AllocSite(call_addr: Addr, func: Sym, size_var: Sym,
+                size_const: Sym, elem_width: unsigned)
+.input AllocSite
+
+.decl BnAllocSite(func: Sym, call_addr: Addr,
+                  buf: Sym, buf_ver: Ver,
+                  size_var: Sym, size_ver: Ver, alloc_func: Sym)
+.input BnAllocSite
+
+.decl BnFlow(func: Sym, src_var: Sym, src_ver: Ver,
+             dst_var: Sym, dst_ver: Ver)
+.input BnFlow
+
+.decl BnUnboundedCounter(func: Sym, var: Sym, ver: Ver, incr_addr: Addr)
+.input BnUnboundedCounter
+
+.decl BnTaintedUnboundedCounter(func: Sym, var: Sym, ver: Ver,
+                                incr_addr: Addr, origin: Sym)
+.input BnTaintedUnboundedCounter
+
+.decl Guard(func: Sym, addr: Addr, var: Sym, ver: Ver,
+            op: Sym, bound: Sym, bound_type: Sym)
+.input Guard
+
+// ── Sentinel values and memset-like callees ──────────────────────────
+// Values that, when broadcast across an unsigned integer slot, become
+// the maximum representable value (a "no entry" / "uninitialized"
+// sentinel). Covers 8/16/32/64-bit widths across signed-form (-1) and
+// two's-complement unsigned-form (UINT8_MAX .. UINT64_MAX) serializations.
+// Hex forms are defensive — BN's `arg.constant` normally stringifies to
+// decimal via `str(int)`, but kept here in case BN/extractor emits hex.
+.decl BnSentinelValue(value: Sym)
+// Signed form (any width): memset idiom `memset(buf, -1, …)`.
+BnSentinelValue("-1").
+// UINT8_MAX
+BnSentinelValue("255").
+BnSentinelValue("0xff").
+BnSentinelValue("0xFF").
+// UINT16_MAX
+BnSentinelValue("65535").
+BnSentinelValue("0xffff").
+BnSentinelValue("0xFFFF").
+// UINT32_MAX
+BnSentinelValue("4294967295").
+BnSentinelValue("0xffffffff").
+BnSentinelValue("0xFFFFFFFF").
+// UINT64_MAX — the `(size_t)-1` / `(void*)-1` sentinel on 64-bit targets.
+BnSentinelValue("18446744073709551615").
+BnSentinelValue("0xffffffffffffffff").
+BnSentinelValue("0xFFFFFFFFFFFFFFFF").
+
+// memset-family callees. Includes libc, compiler builtins, wide-char
+// variants, bounds-checked variants, and the common Windows zeroing
+// primitives (noting that pure-zero functions are retained — the value
+// 0 is NOT in BnSentinelValue, so they filter out naturally and are
+// listed only for structural completeness).
+.decl BnMemsetFunc(callee: Sym)
+// Standard libc
+BnMemsetFunc("memset").
+BnMemsetFunc("memset_s").
+// glibc FORTIFY
+BnMemsetFunc("__memset_chk").
+BnMemsetFunc("__builtin_memset").
+BnMemsetFunc("__builtin___memset_chk").
+// Wide-char (fills wchar_t-sized slots — sentinel logic still applies)
+BnMemsetFunc("wmemset").
+BnMemsetFunc("__builtin_wmemset").
+// Windows zeroing primitives (included for completeness; they only
+// write 0 so BnSentinelValue won't match — kept so that any future
+// non-zero variant on Windows is caught automatically)
+BnMemsetFunc("RtlFillMemory").
+BnMemsetFunc("FillMemory").
+
+// ════════════════════════════════════════════════════════════════════
+// RULE 1: BnSentinelInit — memset(buf, K, n) with K a known sentinel.
+// ════════════════════════════════════════════════════════════════════
+// arg 0 is the destination buffer variable (as an SSA name + version);
+// arg 1 is the fill byte, recorded via CallArgConst when it is a literal.
+
+.decl BnSentinelInit(func: Sym, init_addr: Addr,
+                     buf: Sym, buf_ver: Ver, sentinel_val: Sym)
+
+BnSentinelInit(f, ia, buf, bver, sval) :-
+    Call(f, sig, ia),
+    BnMemsetFunc(sig),
+    ActualArg(ia, 0, _, buf, bver),
+    CallArgConst(ia, 1, sval),
+    BnSentinelValue(sval).
+
+// Fallback tier — when BN didn't bind the destination arg as an SSA var
+// (common when the libc callee has no attached prototype and MLIL shows
+// `0x<addr>()` with empty params), the extractor's ABI-aware register
+// fallback can still recover the fill-byte constant from reaching
+// register-value analysis. Emit a BnSentinelInit with a synthetic
+// placeholder buffer so downstream site-level signals still surface;
+// buffer-flow rules (BnSentinelBuf) skip "_unbound" rows because there
+// is no SSA identity to propagate.
+BnSentinelInit(f, ia, "_unbound", 0, sval) :-
+    Call(f, sig, ia),
+    BnMemsetFunc(sig),
+    CallArgConst(ia, 1, sval),
+    BnSentinelValue(sval),
+    !ActualArg(ia, 0, _, _, _).
+
+.output BnSentinelInit
+
+// ════════════════════════════════════════════════════════════════════
+// RULE 2: BnSentinelBuf — propagate the sentinel label through flow.
+// ════════════════════════════════════════════════════════════════════
+// Any SSA version reachable from a sentinel-initialized buffer (via
+// BnFlow, which covers phi propagation, copies, etc.) inherits the
+// sentinel label so downstream uses can be attributed.
+
+.decl BnSentinelBuf(func: Sym, buf: Sym, buf_ver: Ver,
+                    sentinel_val: Sym, init_addr: Addr)
+
+BnSentinelBuf(f, buf, bver, sval, ia) :-
+    BnSentinelInit(f, ia, buf, bver, sval),
+    buf != "_unbound".
+
+BnSentinelBuf(f, dst, dver, sval, ia) :-
+    BnSentinelBuf(f, src, sver, sval, ia),
+    BnFlow(f, src, sver, dst, dver).
+
+.output BnSentinelBuf
+
+// ════════════════════════════════════════════════════════════════════
+// RULE 3: BnSentinelNarrowAlloc — sentinel buffer whose AllocSite has
+// narrow element width (16-bit or 8-bit). The sentinel is then the
+// maximum narrow-integer value, creating the collision opportunity.
+// ════════════════════════════════════════════════════════════════════
+
+.decl BnSentinelNarrowAlloc(func: Sym, init_addr: Addr,
+                            alloc_addr: Addr, buf: Sym, buf_ver: Ver,
+                            sentinel_val: Sym, elem_width: unsigned)
+
+BnSentinelNarrowAlloc(f, ia, aa, buf, bver, sval, ew) :-
+    BnSentinelInit(f, ia, buf, bver, sval),
+    BnAllocSite(f, aa, abuf, abver, _, _, _),
+    BnFlow(f, abuf, abver, buf, bver),
+    AllocSite(aa, _, _, _, ew),
+    ew > 0,
+    ew <= 2.
+
+.output BnSentinelNarrowAlloc
+
+// ════════════════════════════════════════════════════════════════════
+// RULE 4: BnSentinelCollisionRisk — co-occurring unbounded counter.
+// ════════════════════════════════════════════════════════════════════
+// When a sentinel-initialized buffer and an unbounded counter are in
+// the same function, the counter can reach the sentinel value and
+// collide on equality comparison. This is a structural signal — the
+// LLM layer validates the value-range claim.
+//
+// Three tiers, ranked by precision:
+//   A. eq_guarded_tainted  — equality guard whose `bound` is loaded
+//                            from the sentinel buffer, and the counter
+//                            is attacker-controlled.
+//   B. eq_guarded          — equality guard links counter to a var
+//                            loaded from the buffer (any taint).
+//   C. structural          — bare co-occurrence in the same function.
+
+.decl BnSentinelCollisionRisk(func: Sym, init_addr: Addr,
+                              cmp_addr: Addr, buf: Sym,
+                              counter: Sym, counter_ver: Ver,
+                              sentinel_val: Sym, origin: Sym, tier: Sym)
+
+// Tier A — equality guard + tainted counter.
+BnSentinelCollisionRisk(f, ia, ga, buf, cv, cver, sval, origin,
+                        "eq_guarded_tainted") :-
+    BnSentinelInit(f, ia, buf, _, sval),
+    BnTaintedUnboundedCounter(f, cv, cver, _, origin),
+    Guard(f, ga, cv, cver, op, _, "var"),
+    ( op = "CMP_E" ; op = "CMP_NE" ; op = "cmp_e" ; op = "cmp_ne"
+    ; op = "==" ; op = "!=" ).
+
+// Tier B — equality guard, any counter.
+BnSentinelCollisionRisk(f, ia, ga, buf, cv, cver, sval, "none",
+                        "eq_guarded") :-
+    BnSentinelInit(f, ia, buf, _, sval),
+    BnUnboundedCounter(f, cv, cver, _),
+    !BnTaintedUnboundedCounter(f, cv, cver, _, _),
+    Guard(f, ga, cv, cver, op, _, "var"),
+    ( op = "CMP_E" ; op = "CMP_NE" ; op = "cmp_e" ; op = "cmp_ne"
+    ; op = "==" ; op = "!=" ).
+
+// Tier C — bare structural co-occurrence.
+BnSentinelCollisionRisk(f, ia, 0, buf, cv, cver, sval, "none",
+                        "structural") :-
+    BnSentinelInit(f, ia, buf, _, sval),
+    BnUnboundedCounter(f, cv, cver, _),
+    !BnTaintedUnboundedCounter(f, cv, cver, _, _),
+    !( Guard(f, _, cv, cver, "CMP_E", _, "var")
+     ; Guard(f, _, cv, cver, "CMP_NE", _, "var")
+     ; Guard(f, _, cv, cver, "cmp_e", _, "var")
+     ; Guard(f, _, cv, cver, "cmp_ne", _, "var")
+     ; Guard(f, _, cv, cver, "==", _, "var")
+     ; Guard(f, _, cv, cver, "!=", _, "var")
+     ).
+
+.output BnSentinelCollisionRisk

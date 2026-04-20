@@ -32,6 +32,30 @@ RULES_DIR = PROJECT_DIR / "rules"
 FACTS_DIR = PROJECT_DIR / "facts"
 OUTPUT_DIR = PROJECT_DIR / "output"
 
+# Souffle execution knobs. `-j` adds multi-core parallelism to the Datalog
+# evaluator (helps most on transitive-closure-heavy rules like bn_flow.dl
+# and interproc.dl). `-c` compiles to C++ and then executes — much faster
+# for large fact sets but adds ~1-2min compile overhead on the first run
+# per rule file. Cached compilation output lives under TMPDIR.
+SOUFFLE_JOBS = os.getenv("SOUFFLE_JOBS", "auto")
+SOUFFLE_COMPILE = os.getenv("SOUFFLE_COMPILE", "0") not in ("0", "", "false", "False")
+
+
+def _souffle_cmd(rule_path: str, facts_dir: str, output_dir: str) -> list:
+    """Build the souffle subprocess argv with current knobs applied.
+
+    Centralized so every caller (tool_run_souffle, tool_run_taint_pipeline,
+    tool_run_bn_extra_rules) uses the same evaluation mode without
+    duplicating flag logic.
+    """
+    cmd = ["souffle", "-F", str(facts_dir), "-D", str(output_dir)]
+    if SOUFFLE_JOBS and SOUFFLE_JOBS != "1":
+        cmd.extend(["-j", str(SOUFFLE_JOBS)])
+    if SOUFFLE_COMPILE:
+        cmd.append("-c")
+    cmd.append(str(rule_path))
+    return cmd
+
 
 def _resolve_api_key():
     """Pick the right API key based on MODEL_NAME prefix."""
@@ -45,8 +69,109 @@ def _resolve_api_key():
     return os.getenv("OPENAI_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
 
 
+# Per-request timeout and retry count for the LLM call. Rate-limit errors
+# (HTTP 429) from Anthropic are retried automatically up to MODEL_NUM_RETRIES
+# times with LiteLLM's built-in exponential backoff.
+MODEL_TIMEOUT = int(os.getenv("MODEL_TIMEOUT", "180"))
+MODEL_NUM_RETRIES = int(os.getenv("MODEL_NUM_RETRIES", "4"))
+
+# Anthropic cache TTL. "5m" (default) is cheapest per cache-write but resets
+# on any >5-min idle window. "1h" costs 2× on the first write but only 0.08×
+# on subsequent reads for a full hour — strictly better for binary-analysis
+# sessions with think-time pauses. Set MODEL_CACHE_TTL="5m" to revert.
+MODEL_CACHE_TTL = os.getenv("MODEL_CACHE_TTL", "1h").lower()
+
+# Anthropic extended thinking budget (tokens reserved for the model's
+# internal reasoning pass before it emits the final answer). Enables
+# Sonnet 4.6 to match Opus 4.6 on deep reasoning tasks (value-range
+# arguments, hypothesis generation, Datalog composition) at ~3× lower
+# cost and ~4× higher per-minute rate-limit cap. Default 10k is a
+# balanced budget; raise for very subtle analyses, set 0 to disable.
+# Only takes effect for anthropic/* models.
+MODEL_THINKING_BUDGET = int(os.getenv("MODEL_THINKING_BUDGET", "10000"))
+
+# Max output tokens for the model response. When extended thinking is on
+# this must exceed MODEL_THINKING_BUDGET by at least a few thousand so
+# the final answer has room after the thinking phase.
+MODEL_MAX_TOKENS = int(
+    os.getenv("MODEL_MAX_TOKENS",
+              str(max(4096, MODEL_THINKING_BUDGET + 4096)))
+)
+
+
 def create_model():
-    return LiteLlm(model=MODEL_NAME, api_key=_resolve_api_key())
+    """Build the LiteLlm model with provider-specific optimizations.
+
+    For Anthropic models we enable prompt caching on the system prompt via
+    LiteLLM's `cache_control_injection_points` — this is critical for a
+    long-running agent session because the ~600-line AGENT_INSTRUCTION
+    would otherwise be re-sent (and re-billed) on every turn. With caching
+    enabled, the second turn onward reads the system prompt from the
+    Anthropic cache at ~10% (5m TTL) or ~8% (1h TTL) of the normal
+    input-token cost, which keeps the session comfortably under Anthropic's
+    per-minute input-token rate limit.
+
+    Caching works across the ADK → LiteLLM boundary because the `**kwargs`
+    the ADK LiteLlm wrapper accepts are forwarded verbatim to
+    `litellm.acompletion()`, and LiteLLM's Anthropic adapter handles the
+    `cache_control_injection_points` param natively. The 1-hour TTL
+    requires Anthropic's `extended-cache-ttl-2025-04-11` beta header,
+    which we add via `extra_headers`.
+    """
+    kwargs: dict = {
+        "model": MODEL_NAME,
+        "api_key": _resolve_api_key(),
+        "timeout": MODEL_TIMEOUT,
+        "num_retries": MODEL_NUM_RETRIES,
+        "max_tokens": MODEL_MAX_TOKENS,
+    }
+
+    if MODEL_NAME.startswith("anthropic/"):
+        control: dict = {"type": "ephemeral"}
+        if MODEL_CACHE_TTL == "1h":
+            control["ttl"] = "1h"
+            # Opt into the extended-TTL beta. LiteLLM auto-adds
+            # `prompt-caching-2024-07-31`; we concatenate the extended-TTL
+            # flag so both are active. Anthropic accepts comma-separated
+            # betas in a single header.
+            kwargs["extra_headers"] = {
+                "anthropic-beta":
+                    "prompt-caching-2024-07-31,extended-cache-ttl-2025-04-11",
+            }
+        elif MODEL_CACHE_TTL not in ("5m", ""):
+            # Unknown value — fall back silently to 5m rather than erroring
+            # so a typo in .env never blocks the agent from starting.
+            pass
+
+        # Cache the system prompt (message index 0). Anthropic caches all
+        # content up to the marked point, so this also caches the tool
+        # schemas that appear before the system message in the final API
+        # request. One cache breakpoint is enough — we have up to 4.
+        kwargs["cache_control_injection_points"] = [
+            {
+                "location": "message",
+                "role": "system",
+                "index": 0,
+                "control": control,
+            },
+        ]
+
+        # Extended thinking. When enabled, Anthropic runs an internal
+        # reasoning pass of up to `budget_tokens` before producing the
+        # final answer — this is what lets Sonnet 4.6 match Opus 4.6 on
+        # the reflective-hypothesis workload our prompt demands. Thinking
+        # tokens are billed but don't participate in the cache, so the
+        # cache-read path stays cheap. Temperature is forced to 1 by
+        # Anthropic when thinking is active; we set it explicitly to
+        # avoid the mismatch error some LiteLLM paths raise.
+        if MODEL_THINKING_BUDGET > 0:
+            kwargs["thinking"] = {
+                "type": "enabled",
+                "budget_tokens": MODEL_THINKING_BUDGET,
+            }
+            kwargs["temperature"] = 1.0
+
+    return LiteLlm(**kwargs)
 
 
 def create_mcp_toolset():
@@ -254,7 +379,7 @@ def tool_run_souffle(
 
     try:
         result = subprocess.run(
-            ["souffle", "-F", fdir, "-D", odir, dl_path],
+            _souffle_cmd(dl_path, fdir, odir),
             capture_output=True, text=True, timeout=timeout_seconds,
         )
 
@@ -390,7 +515,7 @@ def tool_generate_signatures(
 
     try:
         result = subprocess.run(
-            ["souffle", "-F", str(FACTS_DIR), "-D", str(OUTPUT_DIR), tmp.name],
+            _souffle_cmd(tmp.name, str(FACTS_DIR), str(OUTPUT_DIR)),
             capture_output=True, text=True, timeout=15,
         )
 
@@ -612,6 +737,197 @@ def tool_generate_annotations(
 
 
 # =============================================================================
+# Tool: Write analysis report to reports/
+# =============================================================================
+REPORTS_DIR = PROJECT_DIR / "reports"
+
+_SEVERITY_BADGES = {
+    "high": "[HIGH]",
+    "medium": "[MEDIUM]",
+    "low": "[LOW]",
+    "info": "[INFO]",
+}
+
+_STATUS_BADGES = {
+    "confirmed": "confirmed",
+    "likely": "likely",
+    "plausible-unverified": "plausible-unverified",
+    "inconclusive": "inconclusive",
+    "refuted": "refuted",
+    "no_candidates": "no_candidates",
+}
+
+
+def _slugify(text: str) -> str:
+    import re
+    slug = re.sub(r"[^a-zA-Z0-9_-]+", "_", text).strip("_").lower()
+    return slug[:60] if len(slug) > 60 else slug
+
+
+def tool_write_analysis_report(
+    title: str,
+    binary: str,
+    findings: list[dict] = None,
+    hypotheses: list[dict] = None,
+    status: str = "",
+    raw_markdown: str = "",
+    filename: str = "",
+    reports_dir: str = "",
+) -> dict:
+    """Persist an analysis report to the reports/ directory.
+
+    Call this at the end of any non-trivial analysis session, AND whenever
+    you conclude "not detected" / "inconclusive" so the hypothesis trace
+    survives. The hybrid LLM+Datalog contract requires that reasoning
+    (not just rule output) is preserved.
+
+    Args:
+        title: Short report title, e.g. "FFmpeg H.264 slice_table review".
+        binary: Absolute or relative path to the binary analyzed.
+        findings: List of finding dicts. Each should carry:
+            - severity:   "high" | "medium" | "low" | "info"
+            - category:   short tag (e.g. "sentinel_collision",
+                          "tainted_counter_as_index")
+            - function:   function name (optional)
+            - addr:       hex or int address (optional)
+            - evidence:   list[str] — each cites a CSV row, fact, or MCP
+                          lookup. REQUIRED — findings without evidence
+                          will be flagged in the output.
+            - reasoning:  one-paragraph explanation tying the facts to
+                          the exploitability claim.
+            - confidence: "confirmed" | "likely" | "plausible-unverified"
+        hypotheses: List of hypothesis dicts from the reflective loop:
+            - name:          e.g. "sentinel collision at slice_table"
+            - verdict:       "confirmed" | "likely" | "plausible-unverified"
+                             | "refuted"
+            - facts_checked: list[str] — specific CSV/fact rows examined.
+            - mcp_checked:   list[str] — MCP calls made (e.g.
+                             "decompile_function(h264_init)").
+            - note:          one-line reasoning.
+        status: Overall session verdict. Use "confirmed" when findings were
+            proven exploitable; "inconclusive" when rules missed and
+            reflective anomalies remain; "refuted" when the reported bug
+            class was actively disproven; "no_candidates" only when no
+            interesting sinks/loops exist at all. Empty string → omitted.
+        raw_markdown: Optional free-form narrative appended at the end —
+            use for multi-paragraph reasoning or code snippets that don't
+            fit the structured schema.
+        filename: Optional override. Defaults to
+            reports/<slug(title)>_<YYYYMMDD_HHMMSS>.md.
+        reports_dir: Optional override directory. Defaults to the repo's
+            reports/ (gitignored).
+
+    Returns:
+        Dict with file path, bytes written, finding count, hypothesis count.
+    """
+    from datetime import datetime
+
+    findings = findings or []
+    hypotheses = hypotheses or []
+
+    target_dir = Path(reports_dir) if reports_dir else REPORTS_DIR
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    now = datetime.utcnow()
+    ts_iso = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    ts_file = now.strftime("%Y%m%d_%H%M%S")
+
+    if filename:
+        fname = filename if filename.endswith(".md") else filename + ".md"
+    else:
+        fname = f"{_slugify(title) or 'analysis'}_{ts_file}.md"
+    out_path = target_dir / fname
+
+    lines: list[str] = []
+    lines.append(f"# {title}\n")
+    lines.append("## Metadata\n")
+    lines.append(f"- **binary:** `{binary}`")
+    lines.append(f"- **timestamp:** {ts_iso}")
+    if status:
+        badge = _STATUS_BADGES.get(status, status)
+        lines.append(f"- **status:** {badge}")
+    lines.append(f"- **finding_count:** {len(findings)}")
+    lines.append(f"- **hypothesis_count:** {len(hypotheses)}")
+    lines.append("")
+
+    # Findings grouped by severity (high → medium → low → info → other)
+    if findings:
+        lines.append("## Findings\n")
+        order = ["high", "medium", "low", "info"]
+        bucketed: dict[str, list[dict]] = {}
+        for f in findings:
+            sev = str(f.get("severity", "info")).lower()
+            bucketed.setdefault(sev, []).append(f)
+        # Stable order, with unknown severities last
+        sev_keys = [s for s in order if s in bucketed] + [
+            s for s in bucketed if s not in order
+        ]
+        for sev in sev_keys:
+            badge = _SEVERITY_BADGES.get(sev, sev.upper())
+            lines.append(f"### {badge}\n")
+            for f in bucketed[sev]:
+                cat = f.get("category", "uncategorized")
+                func = f.get("function", "")
+                addr = f.get("addr", "")
+                header_bits = [f"**{cat}**"]
+                if func:
+                    header_bits.append(f"`{func}`")
+                if addr not in (None, ""):
+                    addr_str = hex(addr) if isinstance(addr, int) else str(addr)
+                    header_bits.append(f"@ {addr_str}")
+                lines.append("#### " + " ".join(header_bits))
+                evidence = f.get("evidence") or []
+                if not evidence:
+                    lines.append("- _⚠️ no evidence cited — please add fact/CSV/MCP references_")
+                else:
+                    lines.append("**Evidence:**")
+                    for e in evidence:
+                        lines.append(f"- {e}")
+                reasoning = f.get("reasoning", "").strip()
+                if reasoning:
+                    lines.append("")
+                    lines.append(f"**Reasoning:** {reasoning}")
+                conf = f.get("confidence", "")
+                if conf:
+                    badge_c = _STATUS_BADGES.get(conf, conf)
+                    lines.append(f"**Confidence:** {badge_c}")
+                lines.append("")
+
+    # Hypotheses table
+    if hypotheses:
+        lines.append("## Hypotheses considered\n")
+        lines.append("| # | Hypothesis | Verdict | Facts checked | MCP checked | Note |")
+        lines.append("|---|---|---|---|---|---|")
+        for i, h in enumerate(hypotheses, 1):
+            name = h.get("name", "(unnamed)")
+            verdict = h.get("verdict", "")
+            badge_v = _STATUS_BADGES.get(verdict, verdict)
+            facts = ", ".join(h.get("facts_checked") or []) or "—"
+            mcp = ", ".join(h.get("mcp_checked") or []) or "—"
+            note = (h.get("note") or "").replace("|", "\\|")
+            lines.append(
+                f"| {i} | {name} | {badge_v} | {facts} | {mcp} | {note} |"
+            )
+        lines.append("")
+
+    if raw_markdown:
+        lines.append("## Notes\n")
+        lines.append(raw_markdown.rstrip())
+        lines.append("")
+
+    content = "\n".join(lines)
+    out_path.write_text(content, encoding="utf-8")
+
+    return {
+        "path": str(out_path),
+        "bytes": len(content.encode("utf-8")),
+        "finding_count": len(findings),
+        "hypothesis_count": len(hypotheses),
+        "status": status,
+    }
+
+
+# =============================================================================
 # Tool: Set entry-point taint (attack surface specification)
 # =============================================================================
 def tool_set_entry_taint(
@@ -696,7 +1012,7 @@ def tool_run_taint_pipeline(
 
     try:
         r1 = subprocess.run(
-            ["souffle", "-F", str(fdir), "-D", str(odir), alias_dl],
+            _souffle_cmd(alias_dl, str(fdir), str(odir)),
             capture_output=True, text=True, timeout=timeout_seconds,
         )
     except subprocess.TimeoutExpired:
@@ -741,7 +1057,7 @@ def tool_run_taint_pipeline(
 
     try:
         r2 = subprocess.run(
-            ["souffle", "-F", str(fdir), "-D", str(odir), interproc_dl],
+            _souffle_cmd(interproc_dl, str(fdir), str(odir)),
             capture_output=True, text=True, timeout=timeout_seconds,
         )
     except subprocess.TimeoutExpired:
@@ -772,7 +1088,7 @@ def tool_run_bn_extra_rules(
     """Run the Bn* extra-rule pipeline (ported from NeuroLog).
 
     Additive to existing outputs — does NOT clear non-Bn* CSVs.
-    Pass order (Phase 1 + Phase 2):
+    Pass order:
        1. bn_flow.dl             — shared Flow transitive closure
        2. bn_signed_infer.dl     — signedness heuristic
        3. bn_counter_oob.dl      — unbounded-counter / counter-as-index
@@ -781,7 +1097,9 @@ def tool_run_bn_extra_rules(
        6. bn_loop_bound.dl       — tainted loop bound (BOIL refinement)
        7. bn_unguarded_cast.dl   — narrowing/sign-extend cast without guard
        8. bn_arith_overflow.dl   — narrow signed overflow + sink coupling
-       9. bn_findings.dl         — unified BnFinding summary
+       9. bn_width_mismatch.dl   — wide value stored into narrow slot
+      10. bn_sentinel_init.dl    — sentinel-initialized buffer + counter
+      11. bn_findings.dl         — unified BnFinding summary
 
     Staging between passes copies derived CSVs back to facts/ so downstream
     rules can consume them via .input.
@@ -804,15 +1122,23 @@ def tool_run_bn_extra_rules(
 
     # Auto-stage TaintedVar from the taint-pipeline output if present — saves
     # the caller from remembering the manual cp step between the two pipelines.
-    # If no TaintedVar.csv exists yet (user hasn't run the taint pipeline),
-    # create an empty placeholder so the Bn* rules still run (non-tainted
-    # variants still produce output).
-    tv_csv = odir / "TaintedVar.csv"
-    tv_facts = fdir / "TaintedVar.facts"
-    if tv_csv.exists():
-        tv_facts.write_text(tv_csv.read_text())
-    elif not tv_facts.exists():
-        tv_facts.touch()
+    # If the taint pipeline didn't run (or timed out mid-pass), stage
+    # empty placeholders for ALL rules that consume its outputs — so a
+    # partial-taint run still surfaces the structural tiers of every
+    # Bn* rule (non-tainted variants continue to fire). This keeps the
+    # pipeline robust to interproc.dl failures without masking them.
+    _taint_outputs = [
+        "TaintedVar", "PointsTo", "TaintedSink", "GuardedSink",
+        "TaintedBuffer", "TaintedField", "SanitizedVar",
+        "TaintedHeapObject",
+    ]
+    for rel in _taint_outputs:
+        csv = odir / f"{rel}.csv"
+        facts = fdir / f"{rel}.facts"
+        if csv.exists():
+            facts.write_text(csv.read_text())
+        elif not facts.exists():
+            facts.touch()
 
     results: dict = {"passes": {}, "outputs": {}}
     rule_files = [
@@ -824,6 +1150,8 @@ def tool_run_bn_extra_rules(
         "bn_loop_bound.dl",
         "bn_unguarded_cast.dl",
         "bn_arith_overflow.dl",
+        "bn_width_mismatch.dl",
+        "bn_sentinel_init.dl",
         "bn_findings.dl",
     ]
 
@@ -838,11 +1166,19 @@ def tool_run_bn_extra_rules(
                                    ("BnCounterUsedAsIndex.csv",    "BnCounterUsedAsIndex.facts"),
                                    ("BnTaintedCounterAsIndex.csv", "BnTaintedCounterAsIndex.facts")],
         "bn_alloc_copy.dl":       [("BnAllocCopyMismatch.csv",     "BnAllocCopyMismatch.facts"),
-                                   ("BnAllocThenUnboundedCopy.csv","BnAllocThenUnboundedCopy.facts")],
+                                   ("BnAllocThenUnboundedCopy.csv","BnAllocThenUnboundedCopy.facts"),
+                                   ("BnAllocSite.csv",             "BnAllocSite.facts")],
         "bn_unguarded_sink.dl":   [("BnUnguardedTaintedSink.csv",  "BnUnguardedTaintedSink.facts")],
         "bn_loop_bound.dl":       [("BnTaintedLoopBound.csv",      "BnTaintedLoopBound.facts")],
         "bn_unguarded_cast.dl":   [("BnUnguardedDangerousCast.csv","BnUnguardedDangerousCast.facts")],
         "bn_arith_overflow.dl":   [("BnTaintedOverflowAtSink.csv", "BnTaintedOverflowAtSink.facts")],
+        "bn_width_mismatch.dl":   [("BnNarrowStore.csv",           "BnNarrowStore.facts"),
+                                   ("BnWidthMismatchStore.csv",    "BnWidthMismatchStore.facts"),
+                                   ("BnWidthMismatchCounter.csv",  "BnWidthMismatchCounter.facts")],
+        "bn_sentinel_init.dl":    [("BnSentinelInit.csv",          "BnSentinelInit.facts"),
+                                   ("BnSentinelBuf.csv",           "BnSentinelBuf.facts"),
+                                   ("BnSentinelNarrowAlloc.csv",   "BnSentinelNarrowAlloc.facts"),
+                                   ("BnSentinelCollisionRisk.csv", "BnSentinelCollisionRisk.facts")],
     }
 
     # One-time pre-stage: copy TaintedSink/GuardedSink from the interproc.dl
@@ -860,7 +1196,7 @@ def tool_run_bn_extra_rules(
 
         try:
             r = subprocess.run(
-                ["souffle", "-F", str(fdir), "-D", str(odir), str(rf_path)],
+                _souffle_cmd(str(rf_path), str(fdir), str(odir)),
                 capture_output=True, text=True, timeout=timeout_seconds,
             )
         except subprocess.TimeoutExpired:
@@ -896,6 +1232,43 @@ def tool_run_bn_extra_rules(
 AGENT_INSTRUCTION = """You are **BinCodeQL**, an interactive binary analysis co-pilot.
 You help vulnerability researchers analyze compiled binaries using Datalog queries
 over facts extracted from Binary Ninja's MLIL-SSA intermediate representation.
+
+## Operating principle: facts are ingredients, not verdicts
+
+BinCodeQL is an **LLM + Datalog hybrid**. The Datalog layer gives you precise,
+mechanical dataflow and structural facts. The LLM layer — you — is responsible
+for the weird-machine reasoning the rules cannot encode: combining facts into
+possible failure scenarios, noticing suspicious coincidences, and hypothesizing
+value-range / semantic invariants the program may silently break.
+
+Three operating rules follow from this:
+
+1. **A Datalog miss is not evidence of absence.** When rules return nothing for
+   a candidate bug, that means the rule set as written did not match, not that
+   the bug is absent. Treat empty rule output as a cue to reason, not as a
+   verdict.
+
+2. **Run the "wait a minute…" moment after every fact-extraction or rule pass.**
+   Skim the fresh facts/CSVs for anomalies worth being *curious* about — an
+   unbounded increment, a `memset` with `-1`/`0xFF`, a cast to a narrower type,
+   a comparison against a suspicious constant (`65535`, `0x7FFFFFFF`, `-1`),
+   a loop bound that is itself tainted, an `AllocSite` with small `elem_width`
+   next to wide writes. For each anomaly, actually verbalize the thought:
+   *"wait, if this counter is unbounded and that buffer has 16-bit elements
+   and memset wrote 0xFF everywhere… what happens when they meet?"*. That
+   reflective, curiosity-driven skepticism is the core of the hybrid. Without
+   it, you are just a Datalog shell.
+
+3. **Sketch value reasoning from the facts you already have.** Combine
+   `ArithOp.operand` (literal constants on arith RHS), `Cast.src_width` /
+   `Cast.dst_width`, `VarWidth`, `Guard.bound`, `CallArgConst` (constant call
+   args — e.g. the `-1` in `memset(buf, -1, …)`), `MemWriteSize` (store width),
+   `AllocSite.elem_width` (heap-element width). Then validate with MCP
+   (`decompile_function`, `get_il`, `hexdump_address`). When the facts alone
+   are insufficient, compose a narrower custom Datalog query over `schema.dl`
+   or read MLIL-SSA directly. **Never** conclude "not present" without either
+   a confirmed refutation or an explicit `inconclusive` verdict written to
+   the report via `tool_write_analysis_report`.
 
 ## Your capabilities
 
@@ -960,6 +1333,9 @@ over facts extracted from Binary Ninja's MLIL-SSA intermediate representation.
 | ArithOp | func, addr, dst, dst_ver, op, src, src_ver, operand | ArithOp.facts |
 | Cast | func, addr, dst, dst_ver, src, src_ver, kind, src_width, dst_width | Cast.facts |
 | VarWidth | func, var, ver, width | VarWidth.facts |
+| CallArgConst | call_addr, arg_idx, value | CallArgConst.facts |
+| MemWriteSize | func, addr, size | MemWriteSize.facts |
+| AllocSite | call_addr, func, size_var, size_const, elem_width | AllocSite.facts |
 | DangerousSink | func, arg_idx, risk | DangerousSink.facts |
 | TaintSourceFunc | name, category | TaintSourceFunc.facts |
 | BufferWriteSource | func, arg_idx | BufferWriteSource.facts |
@@ -1019,6 +1395,11 @@ over facts extracted from Binary Ninja's MLIL-SSA intermediate representation.
 | BnPotentialArithOverflow | func, addr, var, ver, op, width | Narrow (≤4B) signed add/mul/lsl with no guard |
 | BnOverflowAtSink | func, arith_addr, sink_addr, var, callee, arg_idx | Narrow-signed arith flows to size-sensitive sink |
 | BnTaintedOverflowAtSink | func, arith_addr, sink_addr, var, callee, arg_idx, origin | Exploitable narrow-signed overflow |
+| BnNarrowStore | func, addr, val_var, val_ver, store_size, val_width | Wide value stored into narrower memory slot (implicit truncation) |
+| BnWidthMismatchStore | func, addr, val_var, val_ver, store_size, val_width, alloc_addr, elem_width | BnNarrowStore whose alias target is an AllocSite with `elem_width < val_width` |
+| BnSentinelInit | func, addr, buf, sentinel_val | `memset(buf, K, …)` with K ∈ {-1, 0xFF, 0xFFFF, 255, 65535} |
+| BnSentinelBuf | func, buf, sentinel_val | Lifted sentinel buffer through PointsTo / CallAddrArg |
+| BnSentinelCollisionRisk | func, init_addr, use_addr, buf, cmp_var, cmp_ver, sentinel_val, origin | Sentinel buffer compared against unbounded (possibly tainted) counter |
 | BnFinding | func, addr, severity, category, var, detail | Unified aggregation — primary output for reporting |
 
 Severity levels in `BnFinding`: `high` (exploitable shape — tainted counter-as-index, alloc-copy mismatch, unguarded tainted sink, tainted overflow-at-sink), `medium` (structural — tainted loop bound, unguarded cast, unbounded counter without taint).
@@ -1096,18 +1477,22 @@ PointsTo and TaintedVar are auto-staged for the next pipeline — no
 manual copy needed.
 
 **8. Run the Bn* extra-rule pipeline** — `tool_run_bn_extra_rules()`.
-Nine passes with automatic inter-pass fact staging:
-  1. bn_flow.dl           — shared transitive-closure Flow (perf)
-  2. bn_signed_infer.dl   — signedness (VarSign ground truth + heuristic)
-  3. bn_counter_oob.dl    — unbounded counter / counter-as-index
-                            (gated on loop-carried phi self-reference
-                            to suppress straight-line FPs)
-  4. bn_alloc_copy.dl     — alloc/copy size mismatch (NEW bug class)
-  5. bn_unguarded_sink.dl — TaintedSink \\ GuardedSink
-  6. bn_loop_bound.dl     — tainted loop bound (BOIL refinement)
-  7. bn_unguarded_cast.dl — trunc/sx without CFG-reaching guard
-  8. bn_arith_overflow.dl — narrow signed arith overflow + sink coupling
-  9. bn_findings.dl       — unified BnFinding aggregation
+Eleven passes with automatic inter-pass fact staging:
+  1. bn_flow.dl            — shared transitive-closure Flow (perf)
+  2. bn_signed_infer.dl    — signedness (VarSign ground truth + heuristic)
+  3. bn_counter_oob.dl     — unbounded counter / counter-as-index
+                             (gated on loop-carried phi self-reference
+                             to suppress straight-line FPs)
+  4. bn_alloc_copy.dl      — alloc/copy size mismatch (NEW bug class)
+  5. bn_unguarded_sink.dl  — TaintedSink \\ GuardedSink
+  6. bn_loop_bound.dl      — tainted loop bound (BOIL refinement)
+  7. bn_unguarded_cast.dl  — trunc/sx without CFG-reaching guard
+  8. bn_arith_overflow.dl  — narrow signed arith overflow + sink coupling
+  9. bn_width_mismatch.dl  — wide value stored into narrower slot
+                             (32-bit counter → 16-bit table element)
+  10. bn_sentinel_init.dl  — memset(buf, K, …) sentinel meets unbounded
+                             counter (H.264 slice_table class)
+  11. bn_findings.dl       — unified BnFinding aggregation
 
 **9. Optionally run additional rule files** for orthogonal coverage:
   - `patterns.dl`, `patterns_mem_interproc.dl` (UAF, double-free, etc.)
@@ -1179,6 +1564,24 @@ For patterns not covered by existing rule files, compose custom queries on the f
   interproc.dl and boil.dl, run `boil_taint.dl` to find BOILs reachable from
   attacker input. TaintedBOIL shows which BOIL candidates have tainted src/dst
   pointers. TaintedBOILEntry traces back to the specific entry-point param.
+- **Sentinel-collision (memset-initialized sentinel meets unbounded counter):**
+  `bn_sentinel_init.dl` in the Bn* pipeline emits `BnSentinelInit` for every
+  `memset(buf, K, …)` call with `K ∈ {-1, 0xFF, 0xFFFF, 255, 65535}` using
+  `CallArgConst(call_addr, 1, val)`. `BnSentinelCollisionRisk` joins those
+  sentinel buffers with `BnUnboundedCounter`/`BnTaintedUnboundedCounter` when
+  the counter is compared against a load of the buffer. Ingredients used:
+  `CallArgConst`, `Call`, `MemRead`, `Guard`, `BnUnboundedCounter`,
+  `PointsTo`. Classic case: FFmpeg H.264 `slice_table` — `memset(table, -1,
+  n*2)` makes every entry the 16-bit sentinel `0xFFFF`; a 32-bit slice
+  counter that reaches 65535 collides with the sentinel.
+- **Width-truncation on store (32-bit value → 16-bit slot):**
+  `bn_width_mismatch.dl` in the Bn* pipeline emits `BnNarrowStore` from
+  `MemWriteSize(f, addr, store_size)` ∧ `VarWidth(f, val, ver, val_width)`
+  with `val_width > store_size`. `BnWidthMismatchStore` refines this to
+  cases where the destination alias resolves to an `AllocSite` whose
+  `elem_width < val_width`. Ingredients used: `MemWriteSize`, `VarWidth`,
+  `AllocSite`, `PointsTo`. Severity becomes `high` when the stored value
+  is also a `BnUnboundedCounter`.
 
 Use `tool_run_souffle(custom_rules=...)` with inline Datalog for these.
 
@@ -1193,6 +1596,63 @@ CallerOfMemcpy(f) :- Call(f, "memcpy", _).
 .output CallerOfMemcpy
 ```
 
+## Hypothesis loop (mandatory for specific-bug questions)
+
+The loop has two complementary modes — a **reflective mode** (always) and a
+**checklist mode** (on request).
+
+### Reflective mode — always on, runs after every fact-extraction or rule-run pass
+
+Before concluding anything about the binary, skim the fresh facts/CSVs for
+anomalies worth being curious about. For each anomaly, actually verbalize the
+"wait a minute…" thought as a one-liner, then either falsify it (find the
+guard/mask/cast/check that saves the program) or escalate it to the checklist
+below.
+
+Anomaly cues to watch for, with the facts that surface them:
+
+- **Sentinel-collision candidate** — `CallArgConst(addr, 1, "-1")` (or `"255"`,
+  `"65535"`, `"0xFF"`, `"0xFFFF"`) at a `memset`/`__builtin_memset` call;
+  especially when the destination is an `AllocSite` with small `elem_width`
+  (2 → `uint16_t[]`). *"wait — if this buffer is initialized to 0xFFFF
+  sentinels, what values must the comparison operand NOT take?"*
+- **Width-truncation on store** — `MemWriteSize(f, addr, S)` where
+  `VarWidth(f, val, ver, W)` at the same `addr` has `W > S`, i.e. a 32-bit
+  value being stored into a 16/8-bit slot.
+- **Unbounded counter meeting a magic constant** — `BnUnboundedCounter` +
+  `ArithOp.operand` that equals a power-of-two-minus-one (`65535`,
+  `4294967295`, `127`, `255`) or `-1` anywhere in the same function.
+- **Sign-flip at type boundary** — `Cast(kind="sx")` or `Cast(kind="trunc")`
+  with wide `src_width > dst_width` and no guard between def and cast.
+- **Alias with constants** — `CallArgConst` on a `memset`/init-like call where
+  the same buffer later appears in an equality `Guard` against a variable.
+- **Tainted loop bound** — `BnTaintedLoopBound` cases where the bound is not a
+  constant: attacker controls termination.
+
+### Checklist mode — mandatory when the user asks "does this binary have bug X"
+
+1. **Enumerate 3–5 plausible failure-mode families** that fit the symptom
+   (sentinel collision, width-truncation on store, unbounded counter hitting
+   magic constant, sign-flip at type boundary, alias-mediated double-init,
+   off-by-one on size-1, tainted alloc size, …).
+2. **For each, state the supporting/refuting facts** and run the cheapest
+   check first: CSV grep on existing Bn*/TaintedSink outputs → custom Souffle
+   over `schema.dl` → MCP IL read (`get_il`, `decompile_function`,
+   `hexdump_address`) as last resort.
+3. **Empty rule output ≠ refutation.** If no rule encodes the pattern, compose
+   a narrower custom Datalog or inspect MLIL-SSA directly and reason
+   numerically (value ranges, width arithmetic).
+4. **Emit a confidence tag per hypothesis**: `confirmed` | `likely` |
+   `plausible-unverified` | `refuted`, each with a one-line justification.
+
+### Anti-pattern to avoid
+
+"Rules returned nothing, so the bug is not present." This is explicitly
+forbidden as a terminal answer. If no rule fired and no reflective hypothesis
+escalated, the response must be `inconclusive`, and the reflective-mode
+"wait a minute…" list must be written to the report via
+`tool_write_analysis_report(status="inconclusive", hypotheses=[...])`.
+
 ## Response style
 
 - Be concise. Lead with findings, not process.
@@ -1201,6 +1661,20 @@ CallerOfMemcpy(f) :- Call(f, "memcpy", _).
 - If the user asks about a specific function, extract and analyze it before answering.
 - When reporting TaintedSink, note the ctx column to distinguish call-site contexts.
 - If a sink appears in GuardedSink, note the guard condition for triage.
+- **When you state "not detected" or "no finding" you must:**
+  1. List the specific facts that would change the verdict (e.g., "would fire
+     if `CallArgConst(addr, 1, '-1')` existed for a `memset` call on this
+     buffer and `MemWriteSize < VarWidth` appeared at a later store").
+  2. Name the MCP lookups you attempted (`decompile_function(foo)`,
+     `get_il(foo, 'mlil', ssa=True)`) and what they showed.
+  3. Call `tool_write_analysis_report` with the hypotheses list and an
+     appropriate status (`inconclusive` when no rule fired but reflective
+     anomalies remain unrefuted; `refuted` when you actively verified the
+     bug is not present; `no_candidates` only when the target has no
+     interesting sinks or loops at all).
+- **Persist every non-trivial session** — at the end of any analysis deeper
+  than a single question, call `tool_write_analysis_report` so the findings,
+  hypotheses, and evidence trace survive the conversation.
 """
 
 
@@ -1225,6 +1699,7 @@ root_agent = LlmAgent(
         FunctionTool(tool_set_entry_taint),
         FunctionTool(tool_run_taint_pipeline),
         FunctionTool(tool_run_bn_extra_rules),
+        FunctionTool(tool_write_analysis_report),
         create_mcp_toolset(),
     ],
 )
