@@ -53,19 +53,101 @@ BnCFGReach(f, a, b) :- CFGEdge(f, a, b).
 BnCFGReach(f, a, c) :- BnCFGReach(f, a, b), CFGEdge(f, b, c).
 
 // ── Size-sensitive sinks ─────────────────────────────────────────────
+// Allocator entries MUST stay in sync with BnAllocFunc in bn_alloc_copy.dl
+// (and _ALLOC_CALLEES in scripts/bn_extract_facts.py). Prior drift caused
+// BnOverflowAtSink to miss the av_calloc(sx.q((nb_slice_ctx*mb_stride)<<4),
+// 1) pattern in the FFmpeg H.264 slice_table CVE investigation.
 .decl BnSizeSensitiveSink(callee: Sym, arg_idx: Idx)
-BnSizeSensitiveSink("malloc",        0).
-BnSizeSensitiveSink("calloc",        0).
-BnSizeSensitiveSink("calloc",        1).
-BnSizeSensitiveSink("realloc",       1).
-BnSizeSensitiveSink("reallocarray",  1).
-BnSizeSensitiveSink("reallocarray",  2).
-BnSizeSensitiveSink("alloca",        0).
+// Standard libc
+BnSizeSensitiveSink("malloc",         0).
+BnSizeSensitiveSink("xmalloc",        0).
+BnSizeSensitiveSink("calloc",         0).
+BnSizeSensitiveSink("calloc",         1).
+BnSizeSensitiveSink("realloc",        1).
+BnSizeSensitiveSink("reallocarray",   1).
+BnSizeSensitiveSink("reallocarray",   2).
+BnSizeSensitiveSink("reallocf",       1).
+BnSizeSensitiveSink("aligned_alloc",  1).
+BnSizeSensitiveSink("memalign",       1).
+BnSizeSensitiveSink("posix_memalign", 2).
+BnSizeSensitiveSink("valloc",         0).
+BnSizeSensitiveSink("pvalloc",        0).
+BnSizeSensitiveSink("alloca",         0).
+BnSizeSensitiveSink("strdup",         0).
+BnSizeSensitiveSink("strndup",        1).
+// C++ operator new (mangled)
+BnSizeSensitiveSink("operator new",   0).
+BnSizeSensitiveSink("operator new[]", 0).
+BnSizeSensitiveSink("_Znwm",          0).
+BnSizeSensitiveSink("_Znam",          0).
+BnSizeSensitiveSink("_Znwj",          0).
+BnSizeSensitiveSink("_Znaj",          0).
+// glib
+BnSizeSensitiveSink("g_malloc",       0).
+BnSizeSensitiveSink("g_malloc0",      0).
+BnSizeSensitiveSink("g_try_malloc",   0).
+BnSizeSensitiveSink("g_try_malloc0",  0).
+BnSizeSensitiveSink("g_realloc",      1).
+BnSizeSensitiveSink("g_try_realloc",  1).
+BnSizeSensitiveSink("g_new",          0).
+BnSizeSensitiveSink("g_new0",         0).
+// libxml2 alloc wrappers
+BnSizeSensitiveSink("xmlMalloc",       0).
+BnSizeSensitiveSink("xmlMallocAtomic", 0).
+BnSizeSensitiveSink("xmlMemMalloc",    0).
+BnSizeSensitiveSink("xmlRealloc",      1).
+BnSizeSensitiveSink("xmlMemRealloc",   1).
+// Windows heap APIs
+BnSizeSensitiveSink("HeapAlloc",      2).
+BnSizeSensitiveSink("HeapReAlloc",    3).
+BnSizeSensitiveSink("LocalAlloc",     1).
+BnSizeSensitiveSink("LocalReAlloc",   1).
+BnSizeSensitiveSink("GlobalAlloc",    1).
+BnSizeSensitiveSink("GlobalReAlloc",  1).
+BnSizeSensitiveSink("VirtualAlloc",   1).
+BnSizeSensitiveSink("VirtualAllocEx", 2).
+BnSizeSensitiveSink("CoTaskMemAlloc", 0).
+BnSizeSensitiveSink("SysAllocString", 0).
+// Linux kernel / drivers
+BnSizeSensitiveSink("kmalloc",           0).
+BnSizeSensitiveSink("kzalloc",           0).
+BnSizeSensitiveSink("kcalloc",           0).
+BnSizeSensitiveSink("kcalloc",           1).
+BnSizeSensitiveSink("krealloc",          1).
+BnSizeSensitiveSink("vmalloc",           0).
+BnSizeSensitiveSink("vzalloc",           0).
+BnSizeSensitiveSink("devm_kmalloc",      1).
+BnSizeSensitiveSink("devm_kzalloc",      1).
+BnSizeSensitiveSink("kmem_cache_alloc",  0).
+BnSizeSensitiveSink("kmem_cache_zalloc", 0).
+// FFmpeg / libav
+BnSizeSensitiveSink("av_malloc",          0).
+BnSizeSensitiveSink("av_mallocz",         0).
+BnSizeSensitiveSink("av_calloc",          0).
+BnSizeSensitiveSink("av_calloc",          1).
+BnSizeSensitiveSink("av_malloc_array",    0).
+BnSizeSensitiveSink("av_malloc_array",    1).
+BnSizeSensitiveSink("av_mallocz_array",   0).
+BnSizeSensitiveSink("av_mallocz_array",   1).
+BnSizeSensitiveSink("av_realloc",         1).
+BnSizeSensitiveSink("av_realloc_f",       1).
+BnSizeSensitiveSink("av_realloc_f",       2).
+BnSizeSensitiveSink("av_reallocp",        1).
+BnSizeSensitiveSink("av_reallocp_array",  1).
+BnSizeSensitiveSink("av_reallocp_array",  2).
+BnSizeSensitiveSink("av_fast_malloc",     2).
+BnSizeSensitiveSink("av_fast_mallocz",    2).
+BnSizeSensitiveSink("av_fast_realloc",    2).
+BnSizeSensitiveSink("av_strdup",          0).
+BnSizeSensitiveSink("av_strndup",         1).
+// Copy / I/O sinks
 BnSizeSensitiveSink("memcpy",        2).
 BnSizeSensitiveSink("memmove",       2).
 BnSizeSensitiveSink("memset",        2).
 BnSizeSensitiveSink("strncpy",       2).
 BnSizeSensitiveSink("strncat",       2).
+BnSizeSensitiveSink("snprintf",      1).
+BnSizeSensitiveSink("vsnprintf",     1).
 BnSizeSensitiveSink("read",          2).
 BnSizeSensitiveSink("recv",          2).
 BnSizeSensitiveSink("fread",         1).
@@ -74,12 +156,7 @@ BnSizeSensitiveSink("__memcpy_chk",  2).
 BnSizeSensitiveSink("__memmove_chk", 2).
 BnSizeSensitiveSink("__builtin_memcpy",  2).
 BnSizeSensitiveSink("__builtin_memmove", 2).
-// libxml2 wrappers
-BnSizeSensitiveSink("xmlMalloc",       0).
-BnSizeSensitiveSink("xmlMallocAtomic", 0).
-BnSizeSensitiveSink("xmlMemMalloc",    0).
-BnSizeSensitiveSink("xmlRealloc",      1).
-BnSizeSensitiveSink("xmlMemRealloc",   1).
+// libxml2 copy wrappers
 BnSizeSensitiveSink("xmlStrncat",      2).
 BnSizeSensitiveSink("xmlStrncpy",      2).
 BnSizeSensitiveSink("xmlMemcpy",       2).

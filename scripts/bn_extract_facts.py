@@ -489,6 +489,38 @@ _ALLOC_CALLEES = {
 }
 
 
+# Callees whose first argument is a destination buffer pointer that is
+# typically loaded well upstream of the call (post-alloc, often in a
+# different basic block). When the fact-extractor's register fallback
+# recovers actual args for an unprototyped call, arg 0 of these
+# callees is allowed to resolve via cross-BB reaching state — without
+# this relaxation, the SSA identity of the buffer is lost and rules
+# like bn_sentinel_init fall back to a synthetic "_unbound" buffer,
+# which then can't be flow-linked to an AllocSite. Other arg indexes
+# still go through the strict same-BB gate (they're typically fill
+# values / sizes computed at the call site).
+_STABLE_PTR_ARG0_CALLEES = frozenset({
+    # memset family
+    "memset", "memset_s", "__memset_chk", "__builtin_memset",
+    "__builtin___memset_chk", "wmemset", "__builtin_wmemset",
+    "RtlFillMemory", "FillMemory", "bzero", "explicit_bzero",
+    # memcpy / memmove family
+    "memcpy", "memmove", "memccpy",
+    "__memcpy_chk", "__memmove_chk",
+    "__builtin_memcpy", "__builtin_memmove",
+    "__builtin___memcpy_chk", "__builtin___memmove_chk",
+    # string copies
+    "strcpy", "strncpy", "strcat", "strncat",
+    "__strcpy_chk", "__strncpy_chk", "__strcat_chk", "__strncat_chk",
+    # printf-to-buffer
+    "sprintf", "snprintf", "vsprintf", "vsnprintf",
+    "__sprintf_chk", "__snprintf_chk", "__vsprintf_chk", "__vsnprintf_chk",
+    # libxml2 wrappers (arg 0 is dst)
+    "xmlStrcpy", "xmlStrcat", "xmlStrncpy", "xmlStrncat",
+    "xmlMemcpy", "xmlMemmove",
+})
+
+
 def _arg_const(arg):
     """Return int value if arg is a literal constant, else None."""
     try:
@@ -618,7 +650,7 @@ def resolve_callee_cc(bv, caller_func, insn):
 
 
 def extract_reg_args_fallback(bv, caller_func, insn, call_addr, fc, func_name,
-                              reg_state):
+                              reg_state, callee=None):
     """When insn.params is empty, reconstruct actual args from the
     reaching register state at the call site.
 
@@ -638,6 +670,17 @@ def extract_reg_args_fallback(bv, caller_func, insn, call_addr, fc, func_name,
     prototype, and unprototyped callees are precisely the case that
     drives this fallback.
 
+    Exception — _STABLE_PTR_ARG0_CALLEES: for well-known stdlib and
+    compiler-builtin functions whose first argument is a destination
+    buffer pointer (memset, memcpy, strcpy, ...), the pointer is almost
+    always loaded well upstream of the call (post-alloc in a different
+    BB). Accepting cross-BB reg_state for arg 0 of these callees
+    recovers the SSA identity of the buffer — upgrading e.g.
+    BnSentinelCollisionRisk from Tier C (structural) to Tier A/B
+    (flow-linked) on real targets like the FFmpeg H.264 slice_table
+    CVE. Other args (size, fill value) still go through the strict
+    same-BB gate.
+
     Path 2 is what makes summary-based interprocedural analysis work
     across this kind of call: actual→formal param mapping depends on
     ActualArg, and without (2) any rule that propagates through the
@@ -648,6 +691,7 @@ def extract_reg_args_fallback(bv, caller_func, insn, call_addr, fc, func_name,
     `reg_state` entries are (var_name, var_ver, def_bb_start_idx). We
     compare against `call_bb_start_idx` for the same-block filter.
     """
+    relax_bb_for_arg0 = callee in _STABLE_PTR_ARG0_CALLEES
     try:
         call_bb_start = insn.il_basic_block.start
     except AttributeError:
@@ -687,8 +731,12 @@ def extract_reg_args_fallback(bv, caller_func, insn, call_addr, fc, func_name,
             var_name, var_ver, def_bb_start = bound
             # Same-BB gate: skip stale reg_state entries whose def
             # lives in an earlier basic block (they're not real args).
-            if call_bb_start is not None and def_bb_start is not None \
-                    and def_bb_start != call_bb_start:
+            # Exception: for known stable-pointer-arg-0 callees, arg 0
+            # comes from an upstream buffer load; keep cross-BB match.
+            cross_bb = (call_bb_start is not None
+                        and def_bb_start is not None
+                        and def_bb_start != call_bb_start)
+            if cross_bb and not (relax_bb_for_arg0 and arg_idx == 0):
                 continue
             try:
                 fc.add("ActualArg", call_addr, arg_idx, "_",
@@ -970,7 +1018,8 @@ def extract_function_facts(bv, func, fc, verbose=False):
             # actual-to-formal mapping for calls that BN left unbound.
             if not insn.params:
                 extract_reg_args_fallback(bv, func, insn, addr, fc,
-                                          func_name, reg_state)
+                                          func_name, reg_state,
+                                          callee=callee)
             for i, arg in enumerate(insn.params):
                 if arg.operation == MLIL.MLIL_VAR_SSA:
                     arg_name = ssa_var_name(arg.src)
