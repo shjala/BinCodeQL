@@ -335,13 +335,30 @@ def tool_list_datalog_files() -> dict:
 # =============================================================================
 # Tool: Read a rule or output file
 # =============================================================================
-def tool_read_file(file_path: str) -> dict:
-    """Read contents of a rule file, fact file, or output file.
+def tool_read_file(file_path: str, max_bytes: int = 200_000) -> dict:
+    """Read any text file on disk — rules, facts, CSV outputs, prior
+    reports, decompilation scratchpads, READMEs, third-party advisory
+    notes, etc.
+
+    Use this whenever the user references prior work ("the report we
+    wrote last week", "the LibXML2 advisory in docs/"), points at a
+    GitLab/CVE writeup pasted into the repo, or otherwise asks you to
+    build on something already on disk. Reading a prior report first
+    avoids redoing the discovery+extraction phase from scratch — pull
+    out the cited functions, addresses, and verdicts, then run only
+    the additional facts/queries the follow-up question needs.
 
     Args:
-        file_path: Path relative to project dir (e.g., "rules/interproc.dl",
-                   "output/TaintedSink.csv", "facts/Call.facts").
-                   Also accepts absolute paths.
+        file_path: Project-relative path (e.g., "rules/interproc.dl",
+            "output/TaintedSink.csv", "facts/Call.facts",
+            "reports/<old_report>.md", "docs/foo.md") or an absolute
+            path anywhere on disk.
+        max_bytes: Truncation guard. Files larger than this are read
+            up to the cap and `truncated: true` is set in the result;
+            ask the user (or call again with a higher cap) if you
+            need the rest. Default 200 KB — big enough for any single
+            report or rule file, small enough to keep the context
+            window healthy.
     """
     p = Path(file_path)
     if not p.is_absolute():
@@ -350,11 +367,71 @@ def tool_read_file(file_path: str) -> dict:
     if not p.exists():
         return {"error": f"File not found: {p}"}
 
-    content = p.read_text()
+    size = p.stat().st_size
+    truncated = size > max_bytes
+    with p.open("r", encoding="utf-8", errors="replace") as fh:
+        content = fh.read(max_bytes)
     return {
         "path": str(p),
-        "size_bytes": p.stat().st_size,
+        "size_bytes": size,
+        "bytes_read": len(content.encode("utf-8")),
+        "truncated": truncated,
         "content": content,
+    }
+
+
+def tool_list_reports(
+    name_filter: str = "",
+    reports_dir: str = "",
+    limit: int = 50,
+) -> dict:
+    """List prior analysis reports under `reports/` (newest first).
+
+    Use this when the user mentions a prior analysis without giving
+    the exact filename ("the FFmpeg sentinel report", "what did we
+    say about libxml2 last month?"). Pick the most likely match by
+    title/timestamp, then `tool_read_file` to load it.
+
+    Args:
+        name_filter: Optional substring filter on the filename
+            (case-insensitive). E.g. "ffmpeg" or "sentinel".
+        reports_dir: Optional override directory. Defaults to the
+            repo's `reports/`.
+        limit: Maximum number of entries to return (newest first).
+
+    Returns:
+        Dict with `reports`: list of {filename, path, size_bytes,
+        mtime_iso} sorted newest first, plus `count` and `dir`.
+    """
+    from datetime import datetime, timezone
+    target_dir = Path(reports_dir) if reports_dir else REPORTS_DIR
+    if not target_dir.exists():
+        return {"reports": [], "count": 0, "dir": str(target_dir),
+                "note": "reports directory does not exist yet"}
+    needle = name_filter.lower().strip()
+    entries = []
+    for p in target_dir.iterdir():
+        if not p.is_file():
+            continue
+        if needle and needle not in p.name.lower():
+            continue
+        st = p.stat()
+        entries.append({
+            "filename": p.name,
+            "path": str(p),
+            "size_bytes": st.st_size,
+            "mtime_iso": datetime.fromtimestamp(
+                st.st_mtime, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "_mtime": st.st_mtime,
+        })
+    entries.sort(key=lambda x: x["_mtime"], reverse=True)
+    for e in entries:
+        e.pop("_mtime", None)
+    return {
+        "reports": entries[:limit],
+        "count": len(entries),
+        "dir": str(target_dir),
+        "filter": name_filter,
     }
 
 
@@ -1443,6 +1520,38 @@ escalated, the response must be `inconclusive`, and the reflective-mode
 "wait a minute…" list must be written to the report via
 `tool_write_analysis_report(status="inconclusive", hypotheses=[...])`.
 
+## Building on prior work
+
+When a user query references previous analysis ("the report we wrote
+last week", "dig deeper into the libxml2 finding", "follow up on
+report X", "what did we conclude about Y?", or pastes a third-party
+advisory text), do NOT redo discovery from scratch. Instead:
+
+1. **Locate the source.** If the user gave a path, `tool_read_file`
+   it. If they only described it, call `tool_list_reports` (with a
+   `name_filter` substring) to find candidates and pick the most
+   likely by title + recency. For arbitrary paths the user mentions
+   (`docs/...`, `reports/...`, GitLab/CVE writeups they pasted into
+   the repo), `tool_read_file` accepts both relative and absolute
+   paths.
+2. **Read it and reuse what's there.** Pull out the cited functions,
+   addresses, verdicts, and evidence rows. Treat the prior verdict
+   and its evidence as starting state — don't rerun extraction or
+   the full pipeline if the existing facts answer the new question.
+3. **Decide what's actually missing.** The follow-up usually needs
+   *additional* facts or a *different* query, not a fresh run. Run
+   only the marginal extraction / Datalog / MCP calls the new
+   question requires. If facts on disk are stale relative to the
+   current binary state, re-extract — but say so explicitly and
+   cite which facts you refreshed and why.
+4. **Cite the prior report by path** in your reply ("per
+   `reports/<old>.md`, ff_h264_alloc_tables was confirmed at
+   `0xb956f6` …") and then layer the new findings on top.
+
+This is the Datalog-bootstrap-LLM-orchestrator philosophy at the
+session boundary: precomputed facts and prior verdicts ARE the
+bootstrap state when picking up an old thread.
+
 ## Response style
 
 - Be concise. Lead with findings, not process.
@@ -1550,6 +1659,7 @@ root_agent = LlmAgent(
         FunctionTool(tool_run_souffle),
         FunctionTool(tool_list_datalog_files),
         FunctionTool(tool_read_file),
+        FunctionTool(tool_list_reports),
         FunctionTool(tool_generate_signatures),
         FunctionTool(tool_generate_annotations),
         FunctionTool(tool_set_entry_taint),
