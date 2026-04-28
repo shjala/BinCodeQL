@@ -624,6 +624,67 @@ def tool_generate_annotations(
 
 
 # =============================================================================
+# Session token-usage accumulator
+# =============================================================================
+# Updated by `_record_usage` (registered as the LlmAgent's after_model
+# callback). Read by `tool_session_usage` and embedded in every report
+# so analyses carry their own cost ledger.
+
+_USAGE_TOTALS: dict = {
+    "turns": 0,
+    "prompt_tokens": 0,
+    "candidates_tokens": 0,   # output tokens
+    "thoughts_tokens": 0,     # extended-thinking tokens (Anthropic)
+    "cached_tokens": 0,       # cache-read tokens (Anthropic prompt cache)
+    "tool_use_prompt_tokens": 0,
+    "total_tokens": 0,
+}
+
+
+def _record_usage(callback_context, llm_response) -> None:
+    """ADK after_model_callback — accumulate per-turn token usage."""
+    um = getattr(llm_response, "usage_metadata", None)
+    if um is None:
+        return
+    _USAGE_TOTALS["turns"] += 1
+    for src, dst in (
+        ("prompt_token_count", "prompt_tokens"),
+        ("candidates_token_count", "candidates_tokens"),
+        ("thoughts_token_count", "thoughts_tokens"),
+        ("cached_content_token_count", "cached_tokens"),
+        ("tool_use_prompt_token_count", "tool_use_prompt_tokens"),
+        ("total_token_count", "total_tokens"),
+    ):
+        v = getattr(um, src, None)
+        if v:
+            _USAGE_TOTALS[dst] += int(v)
+
+
+def tool_session_usage(reset: bool = False) -> dict:
+    """Return cumulative LLM token usage for the current session.
+
+    The agent SHOULD call this near the end of any non-trivial analysis
+    and pass the result into `tool_write_analysis_report` (or rely on
+    that tool's auto-embed of the same numbers). Use `reset=True` to
+    clear counters at the start of a fresh analysis.
+
+    Returned keys:
+      turns                  — number of model calls
+      prompt_tokens          — input tokens billed
+      candidates_tokens      — output tokens billed
+      thoughts_tokens        — extended-thinking tokens (anthropic/*)
+      cached_tokens          — cache-read tokens (anthropic prompt cache)
+      tool_use_prompt_tokens — tokens charged for tool-use scaffolding
+      total_tokens           — provider-reported total
+    """
+    snapshot = dict(_USAGE_TOTALS)
+    if reset:
+        for k in _USAGE_TOTALS:
+            _USAGE_TOTALS[k] = 0
+    return snapshot
+
+
+# =============================================================================
 # Tool: Write analysis report to reports/
 # =============================================================================
 REPORTS_DIR = PROJECT_DIR / "reports"
@@ -800,6 +861,25 @@ def tool_write_analysis_report(
     if raw_markdown:
         lines.append("## Notes\n")
         lines.append(raw_markdown.rstrip())
+        lines.append("")
+
+    # Auto-embed session token usage so each report carries its own cost
+    # ledger. Numbers come from the after_model_callback accumulator.
+    usage = dict(_USAGE_TOTALS)
+    if usage.get("turns", 0) > 0:
+        lines.append("## Token usage\n")
+        lines.append(f"- **turns:** {usage['turns']}")
+        lines.append(f"- **prompt_tokens:** {usage['prompt_tokens']:,}")
+        lines.append(f"- **candidates_tokens:** {usage['candidates_tokens']:,}")
+        if usage.get("thoughts_tokens"):
+            lines.append(f"- **thoughts_tokens:** {usage['thoughts_tokens']:,}")
+        if usage.get("cached_tokens"):
+            lines.append(f"- **cached_tokens:** {usage['cached_tokens']:,}")
+        if usage.get("tool_use_prompt_tokens"):
+            lines.append(
+                f"- **tool_use_prompt_tokens:** {usage['tool_use_prompt_tokens']:,}"
+            )
+        lines.append(f"- **total_tokens:** {usage['total_tokens']:,}")
         lines.append("")
 
     content = "\n".join(lines)
@@ -1371,6 +1451,71 @@ escalated, the response must be `inconclusive`, and the reflective-mode
 - If the user asks about a specific function, extract and analyze it before answering.
 - When reporting TaintedSink, note the ctx column to distinguish call-site contexts.
 - If a sink appears in GuardedSink, note the guard condition for triage.
+
+## Markdown formatting rules — interactive replies AND `tool_write_analysis_report`
+
+Every artifact you emit (chat reply or report file) MUST follow these
+formatting conventions. Reports written to `reports/*.md` are read by
+humans on GitHub and in IDEs; sloppy formatting hides the evidence
+trail. The same rules apply to the `raw_markdown` body you pass to
+`tool_write_analysis_report` and to `evidence` / `reasoning` strings on
+findings:
+
+1. **Datalog rules and `.dl` snippets** — fence with ```` ```datalog ````
+   (Souffle is a Prolog dialect; `datalog` highlights well on GitHub
+   and in most editors). Example:
+   ````
+   ```datalog
+   .decl Hit(f: Sym, addr: Addr)
+   Hit(f, a) :- TaintedSink(_, f, a, _, _, _, _).
+   ```
+   ````
+
+2. **Fact rows / CSV output / `.facts` content** — fence with
+   ```` ```tsv ```` (Souffle uses tab-separated values). Include the
+   source filename above the block so the reader can grep:
+   ````
+   `BnFinding.csv` rows:
+   ```tsv
+   ff_h264_alloc_tables   12146096   high   sentinel_collision   rcx_1   ...
+   ```
+   ````
+
+3. **Code identifiers in prose** — wrap function names, variable
+   names, struct fields, register names, type names, file paths and
+   addresses in single backticks. `ff_h264_alloc_tables`, `rcx_1`,
+   `slice_table`, `0xb956f6`, `rules/buffer_attribution.dl`. Never
+   leave them as bare words in a sentence.
+
+4. **Other languages** — C / decompiled snippets fence with
+   ```` ```c ````, MLIL-SSA with ```` ```text ````, shell with
+   ```` ```bash ````. Never an unfenced indented block — those don't
+   render as code on GitHub.
+
+5. **Tables for fact triples** — when comparing 3+ rows of structured
+   data, prefer a Markdown table over prose. Columns: relation, key
+   columns, value columns, source CSV.
+
+6. **Numeric addresses** — render as hex with `0x` prefix
+   (`0xb956f6`, not `12146422`). Souffle outputs decimal; convert when
+   citing in prose.
+
+## Token-usage reporting
+
+`tool_write_analysis_report` automatically appends a **Token usage**
+section pulled from the running after-model accumulator — you do not
+need to compose it manually. Two situations require you to call
+`tool_session_usage` directly:
+
+- **User asks for current usage** ("how many tokens so far?", "show
+  the token count", "what's my spend?"): call
+  `tool_session_usage()` (no reset) and quote the numbers verbatim
+  in a short table or bullet list. Don't reset.
+- **User asks to reset / zero / clear the counter** ("reset token
+  count", "start fresh", "clear usage", "zero the counters"): call
+  `tool_session_usage(reset=True)` and confirm the reset in one
+  short sentence. The next turn's usage starts the new tally. Do not
+  reset on your own initiative — only when the user asks.
 - **When you state "not detected" or "no finding" you must:**
   1. List the specific facts that would change the verdict (e.g., "would fire
      if `CallArgConst(addr, 1, '-1')` existed for a `memset` call on this
@@ -1395,6 +1540,7 @@ root_agent = LlmAgent(
     name="BinCodeQL",
     model=create_model(),
     instruction=AGENT_INSTRUCTION,
+    after_model_callback=_record_usage,
     tools=[
         FunctionTool(tool_clean_workspace),
         FunctionTool(tool_extract_facts),
@@ -1410,6 +1556,7 @@ root_agent = LlmAgent(
         FunctionTool(tool_run_taint_pipeline),
         FunctionTool(tool_run_bn_extra_rules),
         FunctionTool(tool_write_analysis_report),
+        FunctionTool(tool_session_usage),
         create_mcp_toolset(),
     ],
 )
