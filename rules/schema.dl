@@ -57,6 +57,15 @@
 .decl FieldWrite(func: Sym, addr: Addr, base: Sym, field: Sym, mem_in: Ver, mem_out: Ver)
 .input FieldWrite
 
+// FieldWriteValue: parallel to MemWriteValue but for STORE_STRUCT_SSA. At
+// a FieldWrite, captures which SSA variable supplies the value being
+// stored into the struct field. Critical for cross-function buffer
+// attribution — joining FieldWriteValue with Def at an AllocSite.call_addr
+// proves an allocation result was stashed into a specific struct field,
+// which a consumer function can then load via FieldRead.
+.decl FieldWriteValue(func: Sym, addr: Addr, val_var: Sym, val_ver: Ver)
+.input FieldWriteValue
+
 .decl AddressOf(func: Sym, var: Sym, ver: Ver, target: Sym)
 .input AddressOf
 

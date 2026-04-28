@@ -17,12 +17,14 @@ from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset, StdioConnectionPar
 from google.adk.tools import FunctionTool
 from google.adk.models.lite_llm import LiteLlm
 
+import pipeline
+from agent_factory import create_model
+
 load_dotenv(override=True)
 
 # =============================================================================
 # Configuration
 # =============================================================================
-MODEL_NAME = os.getenv("MODEL_NAME", "anthropic/claude-sonnet-4-6")
 MCP_PYTHON_PATH = os.getenv("MCP_PYTHON_PATH", "python3")
 MCP_BRIDGE_PATH = os.getenv("MCP_BRIDGE_PATH", "")
 BNDB_PATH = os.getenv("BNDB_PATH", "")
@@ -44,134 +46,19 @@ SOUFFLE_COMPILE = os.getenv("SOUFFLE_COMPILE", "0") not in ("0", "", "false", "F
 def _souffle_cmd(rule_path: str, facts_dir: str, output_dir: str) -> list:
     """Build the souffle subprocess argv with current knobs applied.
 
-    Centralized so every caller (tool_run_souffle, tool_run_taint_pipeline,
-    tool_run_bn_extra_rules) uses the same evaluation mode without
-    duplicating flag logic.
+    Thin wrapper over `pipeline.souffle_cmd` that injects the project's
+    env-var-driven knobs (SOUFFLE_JOBS / SOUFFLE_COMPILE).
     """
-    cmd = ["souffle", "-F", str(facts_dir), "-D", str(output_dir)]
-    if SOUFFLE_JOBS and SOUFFLE_JOBS != "1":
-        cmd.extend(["-j", str(SOUFFLE_JOBS)])
-    if SOUFFLE_COMPILE:
-        cmd.append("-c")
-    cmd.append(str(rule_path))
-    return cmd
+    return pipeline.souffle_cmd(
+        rule_path, facts_dir, output_dir,
+        jobs=SOUFFLE_JOBS, compile_mode=SOUFFLE_COMPILE,
+    )
 
 
-def _resolve_api_key():
-    """Pick the right API key based on MODEL_NAME prefix."""
-    explicit = os.getenv("API_KEY")
-    if explicit:
-        return explicit
-    if MODEL_NAME.startswith("anthropic/"):
-        return os.getenv("ANTHROPIC_API_KEY")
-    if MODEL_NAME.startswith("openai/"):
-        return os.getenv("OPENAI_API_KEY")
-    return os.getenv("OPENAI_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
-
-
-# Per-request timeout and retry count for the LLM call. Rate-limit errors
-# (HTTP 429) from Anthropic are retried automatically up to MODEL_NUM_RETRIES
-# times with LiteLLM's built-in exponential backoff.
-MODEL_TIMEOUT = int(os.getenv("MODEL_TIMEOUT", "180"))
-MODEL_NUM_RETRIES = int(os.getenv("MODEL_NUM_RETRIES", "4"))
-
-# Anthropic cache TTL. "5m" (default) is cheapest per cache-write but resets
-# on any >5-min idle window. "1h" costs 2× on the first write but only 0.08×
-# on subsequent reads for a full hour — strictly better for binary-analysis
-# sessions with think-time pauses. Set MODEL_CACHE_TTL="5m" to revert.
-MODEL_CACHE_TTL = os.getenv("MODEL_CACHE_TTL", "1h").lower()
-
-# Anthropic extended thinking budget (tokens reserved for the model's
-# internal reasoning pass before it emits the final answer). Enables
-# Sonnet 4.6 to match Opus 4.6 on deep reasoning tasks (value-range
-# arguments, hypothesis generation, Datalog composition) at ~3× lower
-# cost and ~4× higher per-minute rate-limit cap. Default 10k is a
-# balanced budget; raise for very subtle analyses, set 0 to disable.
-# Only takes effect for anthropic/* models.
-MODEL_THINKING_BUDGET = int(os.getenv("MODEL_THINKING_BUDGET", "10000"))
-
-# Max output tokens for the model response. When extended thinking is on
-# this must exceed MODEL_THINKING_BUDGET by at least a few thousand so
-# the final answer has room after the thinking phase.
-MODEL_MAX_TOKENS = int(
-    os.getenv("MODEL_MAX_TOKENS",
-              str(max(4096, MODEL_THINKING_BUDGET + 4096)))
-)
-
-
-def create_model():
-    """Build the LiteLlm model with provider-specific optimizations.
-
-    For Anthropic models we enable prompt caching on the system prompt via
-    LiteLLM's `cache_control_injection_points` — this is critical for a
-    long-running agent session because the ~600-line AGENT_INSTRUCTION
-    would otherwise be re-sent (and re-billed) on every turn. With caching
-    enabled, the second turn onward reads the system prompt from the
-    Anthropic cache at ~10% (5m TTL) or ~8% (1h TTL) of the normal
-    input-token cost, which keeps the session comfortably under Anthropic's
-    per-minute input-token rate limit.
-
-    Caching works across the ADK → LiteLLM boundary because the `**kwargs`
-    the ADK LiteLlm wrapper accepts are forwarded verbatim to
-    `litellm.acompletion()`, and LiteLLM's Anthropic adapter handles the
-    `cache_control_injection_points` param natively. The 1-hour TTL
-    requires Anthropic's `extended-cache-ttl-2025-04-11` beta header,
-    which we add via `extra_headers`.
-    """
-    kwargs: dict = {
-        "model": MODEL_NAME,
-        "api_key": _resolve_api_key(),
-        "timeout": MODEL_TIMEOUT,
-        "num_retries": MODEL_NUM_RETRIES,
-        "max_tokens": MODEL_MAX_TOKENS,
-    }
-
-    if MODEL_NAME.startswith("anthropic/"):
-        control: dict = {"type": "ephemeral"}
-        if MODEL_CACHE_TTL == "1h":
-            control["ttl"] = "1h"
-            # Opt into the extended-TTL beta. LiteLLM auto-adds
-            # `prompt-caching-2024-07-31`; we concatenate the extended-TTL
-            # flag so both are active. Anthropic accepts comma-separated
-            # betas in a single header.
-            kwargs["extra_headers"] = {
-                "anthropic-beta":
-                    "prompt-caching-2024-07-31,extended-cache-ttl-2025-04-11",
-            }
-        elif MODEL_CACHE_TTL not in ("5m", ""):
-            # Unknown value — fall back silently to 5m rather than erroring
-            # so a typo in .env never blocks the agent from starting.
-            pass
-
-        # Cache the system prompt (message index 0). Anthropic caches all
-        # content up to the marked point, so this also caches the tool
-        # schemas that appear before the system message in the final API
-        # request. One cache breakpoint is enough — we have up to 4.
-        kwargs["cache_control_injection_points"] = [
-            {
-                "location": "message",
-                "role": "system",
-                "index": 0,
-                "control": control,
-            },
-        ]
-
-        # Extended thinking. When enabled, Anthropic runs an internal
-        # reasoning pass of up to `budget_tokens` before producing the
-        # final answer — this is what lets Sonnet 4.6 match Opus 4.6 on
-        # the reflective-hypothesis workload our prompt demands. Thinking
-        # tokens are billed but don't participate in the cache, so the
-        # cache-read path stays cheap. Temperature is forced to 1 by
-        # Anthropic when thinking is active; we set it explicitly to
-        # avoid the mismatch error some LiteLLM paths raise.
-        if MODEL_THINKING_BUDGET > 0:
-            kwargs["thinking"] = {
-                "type": "enabled",
-                "budget_tokens": MODEL_THINKING_BUDGET,
-            }
-            kwargs["temperature"] = 1.0
-
-    return LiteLlm(**kwargs)
+# Model configuration + factory live in agent_factory.py so the
+# triage agent (scan mode) and any future agent entry-point share the
+# same prompt-caching / retry / extended-thinking behavior.
+# `create_model()` is imported above.
 
 
 def create_mcp_toolset():
@@ -997,87 +884,11 @@ def tool_run_taint_pipeline(
     """
     fdir = Path(facts_dir) if facts_dir else FACTS_DIR
     odir = Path(output_dir) if output_dir else OUTPUT_DIR
-    odir.mkdir(parents=True, exist_ok=True)
-
-    results = {"pass1_alias": {}, "pass2_interproc": {}, "outputs": {}}
-
-    # ── Pass 1: alias.dl → PointsTo ──
-    alias_dl = str(RULES_DIR / "alias.dl")
-    if not Path(alias_dl).exists():
-        return {"error": f"Rule file not found: {alias_dl}"}
-
-    # Clear stale output
-    for stale in odir.glob("*.csv"):
-        stale.unlink()
-
-    try:
-        r1 = subprocess.run(
-            _souffle_cmd(alias_dl, str(fdir), str(odir)),
-            capture_output=True, text=True, timeout=timeout_seconds,
-        )
-    except subprocess.TimeoutExpired:
-        return {"error": f"Pass 1 (alias.dl) timed out after {timeout_seconds}s"}
-
-    if r1.returncode != 0:
-        results["pass1_alias"]["error"] = r1.stderr.strip()
-        # Continue anyway — interproc.dl has fallback rules for empty PointsTo
-    else:
-        results["pass1_alias"]["return_code"] = r1.returncode
-
-    # Collect pass 1 outputs
-    for f in sorted(odir.glob("*.csv")):
-        content = f.read_text().strip()
-        if content:
-            lines = content.split('\n')
-            results["pass1_alias"][f.name] = len(lines)
-
-    # ── Copy PointsTo.csv → facts/PointsTo.facts ──
-    pts_src = odir / "PointsTo.csv"
-    pts_dst = fdir / "PointsTo.facts"
-    if pts_src.exists():
-        pts_content = pts_src.read_text().strip()
-        if pts_content:
-            pts_dst.write_text(pts_content + '\n')
-            results["points_to_facts"] = pts_content.count('\n') + 1
-        else:
-            pts_dst.touch()
-            results["points_to_facts"] = 0
-    else:
-        pts_dst.touch()
-        results["points_to_facts"] = 0
-
-    # ── Pass 2: interproc.dl ──
-    interproc_dl = str(RULES_DIR / "interproc.dl")
-    if not Path(interproc_dl).exists():
-        return {"error": f"Rule file not found: {interproc_dl}"}
-
-    # Clear stale output for pass 2
-    for stale in odir.glob("*.csv"):
-        stale.unlink()
-
-    try:
-        r2 = subprocess.run(
-            _souffle_cmd(interproc_dl, str(fdir), str(odir)),
-            capture_output=True, text=True, timeout=timeout_seconds,
-        )
-    except subprocess.TimeoutExpired:
-        return {"error": f"Pass 2 (interproc.dl) timed out after {timeout_seconds}s"}
-
-    results["pass2_interproc"]["return_code"] = r2.returncode
-    if r2.returncode != 0:
-        results["pass2_interproc"]["stderr"] = r2.stderr.strip()
-
-    # Collect pass 2 outputs
-    for f in sorted(odir.glob("*.csv")):
-        content = f.read_text().strip()
-        if content:
-            lines = content.split('\n')
-            results["outputs"][f.name] = {
-                "rows": len(lines),
-                "preview": lines[:20],
-            }
-
-    return results
+    return pipeline.run_taint_pipeline(
+        fdir, odir, RULES_DIR,
+        timeout_seconds=timeout_seconds,
+        jobs=SOUFFLE_JOBS, compile_mode=SOUFFLE_COMPILE,
+    )
 
 
 def tool_run_bn_extra_rules(
@@ -1118,112 +929,11 @@ def tool_run_bn_extra_rules(
     """
     fdir = Path(facts_dir) if facts_dir else FACTS_DIR
     odir = Path(output_dir) if output_dir else OUTPUT_DIR
-    odir.mkdir(parents=True, exist_ok=True)
-
-    # Auto-stage TaintedVar from the taint-pipeline output if present — saves
-    # the caller from remembering the manual cp step between the two pipelines.
-    # If the taint pipeline didn't run (or timed out mid-pass), stage
-    # empty placeholders for ALL rules that consume its outputs — so a
-    # partial-taint run still surfaces the structural tiers of every
-    # Bn* rule (non-tainted variants continue to fire). This keeps the
-    # pipeline robust to interproc.dl failures without masking them.
-    _taint_outputs = [
-        "TaintedVar", "PointsTo", "TaintedSink", "GuardedSink",
-        "TaintedBuffer", "TaintedField", "SanitizedVar",
-        "TaintedHeapObject",
-    ]
-    for rel in _taint_outputs:
-        csv = odir / f"{rel}.csv"
-        facts = fdir / f"{rel}.facts"
-        if csv.exists():
-            facts.write_text(csv.read_text())
-        elif not facts.exists():
-            facts.touch()
-
-    results: dict = {"passes": {}, "outputs": {}}
-    rule_files = [
-        "bn_flow.dl",
-        "bn_signed_infer.dl",
-        "bn_counter_oob.dl",
-        "bn_alloc_copy.dl",
-        "bn_unguarded_sink.dl",
-        "bn_loop_bound.dl",
-        "bn_unguarded_cast.dl",
-        "bn_arith_overflow.dl",
-        "bn_width_mismatch.dl",
-        "bn_sentinel_init.dl",
-        "bn_findings.dl",
-    ]
-
-    # Stage a CSV from earlier rule to facts/ so subsequent rules can read it.
-    # Also stages TaintedSink/GuardedSink from interproc output at the start so
-    # bn_unguarded_sink can consume them.
-    stage_after = {
-        "bn_flow.dl":             [("BnFlow.csv",                  "BnFlow.facts")],
-        "bn_signed_infer.dl":     [("BnSignedness.csv",            "BnSignedness.facts")],
-        "bn_counter_oob.dl":      [("BnUnboundedCounter.csv",      "BnUnboundedCounter.facts"),
-                                   ("BnTaintedUnboundedCounter.csv","BnTaintedUnboundedCounter.facts"),
-                                   ("BnCounterUsedAsIndex.csv",    "BnCounterUsedAsIndex.facts"),
-                                   ("BnTaintedCounterAsIndex.csv", "BnTaintedCounterAsIndex.facts")],
-        "bn_alloc_copy.dl":       [("BnAllocCopyMismatch.csv",     "BnAllocCopyMismatch.facts"),
-                                   ("BnAllocThenUnboundedCopy.csv","BnAllocThenUnboundedCopy.facts"),
-                                   ("BnAllocSite.csv",             "BnAllocSite.facts")],
-        "bn_unguarded_sink.dl":   [("BnUnguardedTaintedSink.csv",  "BnUnguardedTaintedSink.facts")],
-        "bn_loop_bound.dl":       [("BnTaintedLoopBound.csv",      "BnTaintedLoopBound.facts")],
-        "bn_unguarded_cast.dl":   [("BnUnguardedDangerousCast.csv","BnUnguardedDangerousCast.facts")],
-        "bn_arith_overflow.dl":   [("BnTaintedOverflowAtSink.csv", "BnTaintedOverflowAtSink.facts")],
-        "bn_width_mismatch.dl":   [("BnNarrowStore.csv",           "BnNarrowStore.facts"),
-                                   ("BnWidthMismatchStore.csv",    "BnWidthMismatchStore.facts"),
-                                   ("BnWidthMismatchCounter.csv",  "BnWidthMismatchCounter.facts")],
-        "bn_sentinel_init.dl":    [("BnSentinelInit.csv",          "BnSentinelInit.facts"),
-                                   ("BnSentinelBuf.csv",           "BnSentinelBuf.facts"),
-                                   ("BnSentinelNarrowAlloc.csv",   "BnSentinelNarrowAlloc.facts"),
-                                   ("BnSentinelCollisionRisk.csv", "BnSentinelCollisionRisk.facts")],
-    }
-
-    # One-time pre-stage: copy TaintedSink/GuardedSink from the interproc.dl
-    # output so bn_unguarded_sink has its inputs. Harmless if they don't exist.
-    for rel in ("TaintedSink", "GuardedSink"):
-        src = odir / f"{rel}.csv"
-        dst = fdir / f"{rel}.facts"
-        if src.exists() and not dst.exists():
-            dst.write_text(src.read_text())
-
-    for rf in rule_files:
-        rf_path = RULES_DIR / rf
-        if not rf_path.exists():
-            return {"error": f"Rule file not found: {rf_path}"}
-
-        try:
-            r = subprocess.run(
-                _souffle_cmd(str(rf_path), str(fdir), str(odir)),
-                capture_output=True, text=True, timeout=timeout_seconds,
-            )
-        except subprocess.TimeoutExpired:
-            results["passes"][rf] = {"error": f"timed out after {timeout_seconds}s"}
-            return results
-
-        results["passes"][rf] = {"return_code": r.returncode}
-        if r.returncode != 0:
-            results["passes"][rf]["stderr"] = r.stderr.strip()
-
-        for csv_name, facts_name in stage_after.get(rf, []):
-            src = odir / csv_name
-            dst = fdir / facts_name
-            if src.exists():
-                content = src.read_text().strip()
-                dst.write_text(content + "\n" if content else "")
-
-    # Collect only Bn* outputs for reporting
-    for f in sorted(odir.glob("Bn*.csv")):
-        content = f.read_text().strip()
-        rows = len(content.split("\n")) if content else 0
-        results["outputs"][f.name] = {
-            "rows": rows,
-            "preview": content.split("\n")[:10] if content else [],
-        }
-
-    return results
+    return pipeline.run_bn_extra_rules(
+        fdir, odir, RULES_DIR,
+        timeout_seconds=timeout_seconds,
+        jobs=SOUFFLE_JOBS, compile_mode=SOUFFLE_COMPILE,
+    )
 
 
 # =============================================================================

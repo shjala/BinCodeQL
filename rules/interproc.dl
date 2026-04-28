@@ -74,20 +74,79 @@
 .decl IsParam(func: Sym, var: Sym)
 IsParam(f, v) :- FormalParam(f, v, _).
 
-// ── Intra-procedural flow (same as summary.dl) ────────────────────
-.decl Flow(func: Sym, src_var: Sym, src_ver: Ver, dst_var: Sym, dst_ver: Ver)
+// ── Intra-procedural flow ────────────────────────────────────────
+//
+// Scaling note (2026-04-27): on FFmpeg-scale functions (e.g.
+// ff_h264_decode_mb_cabac with 6.5K Defs / 12.5K Uses / 6.2K
+// PhiSources), an unbounded whole-function TC on Flow blew up — even
+// when no taint was present (Flow is computed regardless of consumers).
+// We adopt the size-gated two-tier pattern proven in bn_flow.dl:
+//
+//   - FlowStep — one-hop edges (always computed, always cheap).
+//   - Flow    — bounded TC, ONLY for functions below FUNC_SIZE_GATE_IP.
+//               Large functions get FlowStep + identity; TaintedVar's
+//               own fixpoint composes multi-hop propagation through
+//               repeated single-step applications.
+//
+// Precision tradeoff: GuardedSink's transitive backward search loses
+// multi-hop guards on large functions. Direct guards (TaintedVar==
+// guard_var) and one-hop indirection still trigger. This matches the
+// documented bn_flow.dl tradeoff.
 
-Flow(f, sv, sver, dv, dver) :-
+#ifndef MAX_HOPS_IP
+#define MAX_HOPS_IP 8
+#endif
+
+#ifndef FUNC_SIZE_GATE_IP
+#define FUNC_SIZE_GATE_IP 2000
+#endif
+
+.decl FuncDefCountIP(func: Sym, n: number)
+FuncDefCountIP(f, n) :-
+    Def(f, _, _, _),
+    n = count : { Def(f, _, _, _) }.
+
+.decl FuncIsLargeIP(func: Sym)
+FuncIsLargeIP(f) :- FuncDefCountIP(f, n), n > FUNC_SIZE_GATE_IP.
+
+// Single-step flow (always computed, cheap)
+.decl FlowStep(func: Sym, src_var: Sym, src_ver: Ver, dst_var: Sym, dst_ver: Ver)
+
+FlowStep(f, sv, sver, dv, dver) :-
     Use(f, sv, sver, addr),
     Def(f, dv, dver, addr),
     dv != "mem", sv != dv.
 
-Flow(f, sv, sver, dv, dver) :-
+FlowStep(f, sv, sver, dv, dver) :-
     PhiSource(f, dv, dver, sv, sver).
 
-Flow(f, sv, sver, dv3, dver3) :-
-    Flow(f, sv, sver, dv2, dver2),
-    Flow(f, dv2, dver2, dv3, dver3).
+// Hop-bounded TC, only for functions under the size gate
+.decl FlowH(func: Sym, src_var: Sym, src_ver: Ver, dst_var: Sym, dst_ver: Ver, hops: unsigned)
+
+FlowH(f, sv, sver, dv, dver, 1) :-
+    FlowStep(f, sv, sver, dv, dver),
+    !FuncIsLargeIP(f).
+
+FlowH(f, sv, sver, dv, dver, h2) :-
+    FlowH(f, sv, sver, mid, mver, h1),
+    h1 < MAX_HOPS_IP,
+    FlowStep(f, mid, mver, dv, dver),
+    h2 = h1 + 1,
+    (sv != dv ; sver != dver).
+
+// Unified Flow projection — same shape as before, downstream untouched
+.decl Flow(func: Sym, src_var: Sym, src_ver: Ver, dst_var: Sym, dst_ver: Ver)
+
+// Identity: every defined var flows to itself (lets rules use uniform pattern)
+Flow(f, v, ver, v, ver) :- Def(f, v, ver, _).
+
+// Small/medium functions: full hop-bounded TC
+Flow(f, sv, sver, dv, dver) :- FlowH(f, sv, sver, dv, dver, _).
+
+// Large functions: one-hop only — TaintedVar fixpoint composes the chain
+Flow(f, sv, sver, dv, dver) :-
+    FlowStep(f, sv, sver, dv, dver),
+    FuncIsLargeIP(f).
 
 // ── Taint state (1-CFA context-sensitive) ────────────────────────
 // TaintedVar(func, var, ver, origin, ctx)

@@ -82,7 +82,8 @@ class FactCollector:
         "CFGEdge.facts", "Call.facts", "Cast.facts",
         "DangerousSink.facts", "Def.facts",
         "EntryTaint.facts",
-        "FieldRead.facts", "FieldWrite.facts", "FormalParam.facts",
+        "FieldRead.facts", "FieldWrite.facts", "FieldWriteValue.facts",
+        "FormalParam.facts",
         "Guard.facts", "Jump.facts", "MemRead.facts", "MemWrite.facts",
         "MemWriteSize.facts", "MemWriteValue.facts",
         "PhiSource.facts", "PointsTo.facts", "ReturnVal.facts",
@@ -939,6 +940,17 @@ def extract_function_facts(bv, func, fc, verbose=False):
                 fc.add("MemRead", func_name, addr, base, offset, str(src.size))
                 fc.add("Use", func_name, "mem", ssa_var_version(src.src_memory), addr)
 
+            # Check for struct-field read: var = base->field
+            #
+            # Emits FieldRead(func, addr, base, field_off) so a Datalog
+            # rule can connect a producer's FieldWrite of an alloc result
+            # into a struct field with a consumer's FieldRead of the same
+            # field — that's the buffer-attribution chain that lets
+            # cross-function triage prove the producer-consumer linkage.
+            if src.operation == MLIL.MLIL_LOAD_STRUCT_SSA:
+                fc.add("FieldRead", func_name, addr, str(src.src), str(src.offset))
+                fc.add("Use", func_name, "mem", ssa_var_version(src.src_memory), addr)
+
             # Collect uses from RHS
             collect_uses(fc, func_name, src, addr)
             continue
@@ -1095,6 +1107,11 @@ def extract_function_facts(bv, func, fc, verbose=False):
             fc.add("Use", func_name, "mem", mem_in, addr)
             collect_uses(fc, func_name, base_expr, addr)
             collect_uses(fc, func_name, src_expr, addr)
+            # FieldWriteValue captures which SSA variable is being stored
+            # into the struct field — needed to link an AllocSite return
+            # value to the field it's stored into. Mirrors MemWriteValue
+            # for plain stores.
+            collect_value_vars(fc, func_name, src_expr, addr, "FieldWriteValue")
             continue
 
         # ── IF: conditional branch ──

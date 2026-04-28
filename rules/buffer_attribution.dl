@@ -1,0 +1,253 @@
+// buffer_attribution.dl — link allocator results to consumer reads via
+// shared struct field offsets. Bridges producer-consumer reasoning for
+// collision-class findings (sentinel_collision*, alloc_copy_*,
+// width_mismatch_counter) where the producer's memset/alloc and the
+// consumer's truncating store live in different functions and the only
+// common reference is "they touch the same struct field".
+//
+// Pipeline of derivations:
+//
+//   1. AllocFieldStash — at AllocSite ca, the result variable (defined at
+//      the same addr) is stored into a struct field somewhere downstream
+//      via FieldWriteValue. We pin the alloc to (alloc_call_addr,
+//      producer_func, elem_width, struct_base, store_addr, field_off).
+//
+//   2. ConsumerFieldLoad — any function that has a FieldRead. Carries
+//      the loaded variable's def so a downstream rule can match on the
+//      SSA name appearing in MemWrite/MemRead target expressions.
+//
+//   3. BufferReachesConsumer — joins (1) and (2) on shared field_off.
+//      Surfaces the cross-function chain triage needs to ground
+//      producer-consumer buffer linkage.
+//
+//   4. Uint16TruncStoreOnAllocBuffer — specialization for the
+//      sentinel_collision smoking gun: any 2-byte store of a wider
+//      value into a buffer reached from a uint16_t allocation.
+//
+// Notes on robustness:
+//   - We don't require the FieldWrite to be adjacent to the AllocSite;
+//     Def(alloc_var, ver, ca) already pins the stored variable to the
+//     allocation. The store can be downstream.
+//   - We match by field offset only. A struct field offset is a stable
+//     ABI attribute — if two functions FieldWrite/FieldRead the same
+//     numeric offset, they almost certainly reference the same field of
+//     the same struct (within one binary). Cross-struct offset
+//     collisions are rare; the agent disambiguates by pairing with
+//     elem_width.
+//   - producer_func == consumer_func is allowed; intra-function
+//     buffer linkage is also useful. Triage filters to pf != cf when
+//     cross-function evidence is what's wanted.
+
+#include "schema.dl"
+
+// (alloc_call_addr, producer_func, elem_width, struct_base_var,
+//  store_addr, field_off)
+.decl AllocFieldStash(alloc_call_addr: Addr, producer_func: Sym,
+                      elem_width: unsigned, struct_base: Sym,
+                      store_addr: Addr, field_off: Sym)
+AllocFieldStash(ca, pf, ew, base, sa, fld) :-
+    AllocSite(ca, _, _, _, ew),
+    Def(pf, av, ver, ca),                  // alloc-result var defined here
+    FieldWriteValue(pf, sa, av, ver),       // and later stored into a field
+    FieldWrite(pf, sa, base, fld, _, _).
+.output AllocFieldStash
+
+// (consumer_func, read_addr, base, field_off, dst_var, dst_ver)
+//
+// The dst_var/dst_ver is the SSA variable that received the loaded
+// pointer — useful when chaining into MemWrite target expressions
+// that mention the loaded var by `name#ver`.
+.decl ConsumerFieldLoad(consumer_func: Sym, read_addr: Addr,
+                        base: Sym, field_off: Sym,
+                        dst_var: Sym, dst_ver: Ver)
+ConsumerFieldLoad(cf, ra, base, fld, dv, dvr) :-
+    FieldRead(cf, ra, base, fld),
+    Def(cf, dv, dvr, ra).
+.output ConsumerFieldLoad
+
+// Primary cross-function bridge. One row per (alloc, consumer-load)
+// pair sharing a field offset.
+.decl BufferReachesConsumer(alloc_call_addr: Addr, producer_func: Sym,
+                            elem_width: unsigned, field_off: Sym,
+                            consumer_func: Sym, consumer_read_addr: Addr,
+                            consumer_var: Sym, consumer_ver: Ver)
+BufferReachesConsumer(ca, pf, ew, fld, cf, ra, cv, cvr) :-
+    AllocFieldStash(ca, pf, ew, _, _, fld),
+    ConsumerFieldLoad(cf, ra, _, fld, cv, cvr).
+.output BufferReachesConsumer
+
+// Specialization for sentinel_collision: a uint16_t buffer
+// (elem_width=2) is reached in some consumer, and that consumer
+// performs a 2-byte store of a wider variable into a target whose
+// expression mentions the loaded buffer pointer by `name#ver`.
+//
+// `target` in MemWrite is a string expression; we use `contains` to
+// look for the loaded var's SSA name+ver as a substring. This is a
+// coarse match — false positives possible if the same name#ver
+// appears in unrelated targets within the function — but practically
+// effective on real binaries.
+.decl Uint16TruncStoreOnAllocBuffer(alloc_call_addr: Addr,
+                                    producer_func: Sym,
+                                    consumer_func: Sym,
+                                    consumer_addr: Addr,
+                                    val_var: Sym,
+                                    val_width: unsigned)
+Uint16TruncStoreOnAllocBuffer(ca, pf, cf, sa, vv, vw) :-
+    BufferReachesConsumer(ca, pf, 2, _, cf, _, cv, cvr),
+    MemWrite(cf, sa, target, _, _),
+    contains(cat(cv, cat("#", to_string(cvr))), target),
+    MemWriteSize(cf, sa, 2),
+    MemWriteValue(cf, sa, vv, vvr),
+    VarWidth(cf, vv, vvr, vw),
+    vw >= 4.
+.output Uint16TruncStoreOnAllocBuffer
+
+// ─────────────────────────────────────────────────────────────────────
+// Multi-hop alloc attribution
+// ─────────────────────────────────────────────────────────────────────
+//
+// The single-hop AllocFieldStash above misses common patterns where
+// the producer stores an alloc result to one struct field (e.g.
+// h->slice_table_base = av_calloc(...)) and *also* derives a related
+// pointer from it that lands in a different field (e.g.
+// h->slice_table = h->slice_table_base + offset). The consumer then
+// reads h->slice_table at the second field — which AllocFieldStash
+// doesn't link to the original allocation.
+//
+// AllocReachesPointer is a small alias-ish closure that propagates
+// alloc-attribution through three patterns:
+//   (1) Direct alloc result (base case).
+//   (2) FieldRead from a field already known to hold an alloc-rooted
+//       pointer — covers cross-function and through-memory propagation.
+//   (3) ArithOp("add", base, offset) where base is alloc-rooted —
+//       covers `slice_table = slice_table_base + N` style derivation.
+//   (4) Cast/sx/zx that preserves a pointer value (rare but happens
+//       at architecture-width transitions).
+//
+// AllocFieldStashTransitive then mirrors AllocFieldStash but matches
+// any AllocReachesPointer-attributed value as the FieldWriteValue,
+// not just the direct alloc result. Same downstream consumers.
+
+.decl AllocReachesPointer(func: Sym, var: Sym, ver: Ver,
+                          alloc_call_addr: Addr, elem_width: unsigned)
+
+// (1) Base case: var IS the alloc result.
+AllocReachesPointer(f, v, vr, ca, ew) :-
+    AllocSite(ca, _, _, _, ew),
+    Def(f, v, vr, ca).
+
+// (2) Propagate via FieldRead from a field known to hold an
+//     alloc-rooted pointer. Crosses functions via the shared field
+//     offset.
+AllocReachesPointer(f, v, vr, ca, ew) :-
+    AllocFieldStash(ca, _, ew, _, _, fld),
+    FieldRead(f, addr, _, fld),
+    Def(f, v, vr, addr).
+
+// (3) Propagate via ArithOp("add", base, _) where base is reaching.
+AllocReachesPointer(f, v, vr, ca, ew) :-
+    AllocReachesPointer(f, sv, svr, ca, ew),
+    ArithOp(f, _, v, vr, "add", sv, svr, _).
+
+// (4) Propagate via Cast (sx/zx) — pointer value preserved.
+AllocReachesPointer(f, v, vr, ca, ew) :-
+    AllocReachesPointer(f, sv, svr, ca, ew),
+    Cast(f, _, v, vr, sv, svr, _, _, _).
+
+// (5) Generic propagation through any non-Call instruction. Catches
+// complex MLIL operations the extractor doesn't decompose into clean
+// ArithOp / Cast facts (e.g. scaled-add chains in BN's address
+// decomposition for `&base[idx]`-style derivations). Limiting to
+// non-Call addresses prevents arg→return-value false positives at
+// call sites — Call results that are themselves allocations are
+// already covered by rule (1).
+//
+// Some over-approximation is accepted here: any Use→Def at the same
+// addr, including subtraction or comparison results, will propagate.
+// In practice the false-positive rate is low because the downstream
+// rules require the propagated var to actually be FieldWrite'd or
+// MemWrite-targeted, which non-pointer values rarely are.
+AllocReachesPointer(f, v, vr, ca, ew) :-
+    AllocReachesPointer(f, sv, svr, ca, ew),
+    Use(f, sv, svr, addr),
+    Def(f, v, vr, addr),
+    sv != v,
+    !Call(f, _, addr).
+
+// Transitive variant of AllocFieldStash. Any FieldWrite whose
+// value-var is alloc-attributed (directly or transitively) counts as
+// stashing the buffer at that field.
+.decl AllocFieldStashTransitive(alloc_call_addr: Addr,
+                                producer_func: Sym,
+                                elem_width: unsigned,
+                                struct_base: Sym,
+                                store_addr: Addr,
+                                field_off: Sym)
+AllocFieldStashTransitive(ca, pf, ew, base, sa, fld) :-
+    AllocReachesPointer(pf, v, vr, ca, ew),
+    FieldWriteValue(pf, sa, v, vr),
+    FieldWrite(pf, sa, base, fld, _, _).
+.output AllocFieldStashTransitive
+
+// Transitive variant of BufferReachesConsumer — joins
+// AllocFieldStashTransitive with ConsumerFieldLoad. This is the
+// relation triage should consume by default; it strictly subsumes
+// the direct BufferReachesConsumer above.
+.decl BufferReachesConsumerT(alloc_call_addr: Addr, producer_func: Sym,
+                             elem_width: unsigned, field_off: Sym,
+                             consumer_func: Sym, consumer_read_addr: Addr,
+                             consumer_var: Sym, consumer_ver: Ver)
+BufferReachesConsumerT(ca, pf, ew, fld, cf, ra, cv, cvr) :-
+    AllocFieldStashTransitive(ca, pf, ew, _, _, fld),
+    ConsumerFieldLoad(cf, ra, _, fld, cv, cvr).
+.output BufferReachesConsumerT
+
+// TruncDerived: a 2-byte (uint16) SSA variable that was defined
+// from a wider (>=4-byte) source variable via an MLIL op the
+// extractor doesn't expose as a clean Cast(trunc). Captures the
+// `.w` partial-register extraction pattern (`x_2byte = (y_wider).w`)
+// that BN's MLIL often emits as a SET_VAR_SSA_FIELD without a Cast
+// fact.
+//
+// Used by the transitive smoking-gun rule below so a uint16 store of
+// a truncated value still surfaces even when the truncation isn't
+// captured by the Cast relation.
+.decl TruncDerived(func: Sym, var: Sym, ver: Ver)
+TruncDerived(f, v, vr) :-
+    VarWidth(f, v, vr, 2),
+    Use(f, sv, svr, addr),
+    Def(f, v, vr, addr),
+    sv != v,
+    !Call(f, _, addr),
+    VarWidth(f, sv, svr, sw),
+    sw >= 4.
+.output TruncDerived
+
+// Transitive smoking-gun specialization. Two rule heads:
+//   (a) The stored value-var is itself wider than 2 bytes — direct
+//       truncation at the store. (Same as the strict variant.)
+//   (b) The stored value-var is 2 bytes but is TruncDerived from
+//       a wider source — handles the BN `.w` extraction pattern
+//       that produces the truncated value before the store.
+.decl Uint16TruncStoreOnAllocBufferT(alloc_call_addr: Addr,
+                                     producer_func: Sym,
+                                     consumer_func: Sym,
+                                     consumer_addr: Addr,
+                                     val_var: Sym,
+                                     val_width: unsigned)
+Uint16TruncStoreOnAllocBufferT(ca, pf, cf, sa, vv, vw) :-
+    BufferReachesConsumerT(ca, pf, 2, _, cf, _, cv, cvr),
+    MemWrite(cf, sa, target, _, _),
+    contains(cat(cv, cat("#", to_string(cvr))), target),
+    MemWriteSize(cf, sa, 2),
+    MemWriteValue(cf, sa, vv, vvr),
+    VarWidth(cf, vv, vvr, vw),
+    vw >= 4.
+Uint16TruncStoreOnAllocBufferT(ca, pf, cf, sa, vv, 2) :-
+    BufferReachesConsumerT(ca, pf, 2, _, cf, _, cv, cvr),
+    MemWrite(cf, sa, target, _, _),
+    contains(cat(cv, cat("#", to_string(cvr))), target),
+    MemWriteSize(cf, sa, 2),
+    MemWriteValue(cf, sa, vv, vvr),
+    TruncDerived(cf, vv, vvr).
+.output Uint16TruncStoreOnAllocBufferT
