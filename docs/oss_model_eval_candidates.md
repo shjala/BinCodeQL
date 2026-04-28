@@ -28,67 +28,57 @@ between releases (e.g. GLM-5 was deprecated 2026-04-20 in favor of
 
 ## Per-model `.env` recipes
 
+All recipes share these "common" lines — set them once and only
+`MODEL_NAME` (and any per-model sampling tweaks) change between
+candidates:
+
+```
+MODEL_BASE_URL="https://integrate.api.nvidia.com/v1"
+MODEL_API_KEY_ENV="NVIDIA_API_KEY"
+MODEL_TIMEOUT="600"
+MODEL_THINKING="off"   # or "on" — see notes per model below
+```
+
+`MODEL_THINKING` synthesizes the right toggle for whichever family is
+active (DeepSeek/GLM use `chat_template_kwargs.thinking`, Qwen3 uses
+`enable_thinking`; the agent_factory sets both, servers ignore the
+one they don't know).
+
 ### GLM-5.1 (#1 pick)
 ```
 MODEL_NAME="openai/z-ai/glm-5.1"
-MODEL_BASE_URL="https://integrate.api.nvidia.com/v1"
-MODEL_API_KEY_ENV="NVIDIA_API_KEY"
 MODEL_TOP_P="0.95"
 MODEL_TEMPERATURE="1.0"
-MODEL_THINKING_BUDGET="0"
-MODEL_TIMEOUT="600"
-# GLM-5.1 has its own thinking-mode toggle — check the model card
-# for the right extra_body shape if you want to disable it.
-# MODEL_EXTRA_BODY='{"chat_template_kwargs":{"thinking":false}}'
 ```
 
 ### Kimi K2.x
 ```
 MODEL_NAME="openai/moonshotai/kimi-k2.6"
-MODEL_BASE_URL="https://integrate.api.nvidia.com/v1"
-MODEL_API_KEY_ENV="NVIDIA_API_KEY"
 MODEL_TEMPERATURE="0.6"
-MODEL_TIMEOUT="600"
 ```
 
 ### DeepSeek V4-Pro (already wired)
 ```
 MODEL_NAME="openai/deepseek-ai/deepseek-v4-pro"
-MODEL_BASE_URL="https://integrate.api.nvidia.com/v1"
-MODEL_API_KEY_ENV="NVIDIA_API_KEY"
 MODEL_TOP_P="0.95"
 MODEL_TEMPERATURE="1.0"
-MODEL_EXTRA_BODY='{"chat_template_kwargs":{"thinking":false}}'
-MODEL_THINKING_BUDGET="0"
-MODEL_TIMEOUT="600"
 ```
 
 ### Qwen3
 ```
 MODEL_NAME="openai/qwen/qwen3.5-122b-a10b"
-MODEL_BASE_URL="https://integrate.api.nvidia.com/v1"
-MODEL_API_KEY_ENV="NVIDIA_API_KEY"
 MODEL_TEMPERATURE="0.7"
 MODEL_TOP_P="0.8"
-MODEL_TIMEOUT="600"
-# Qwen3 has an enable_thinking toggle — opt in or out via
-# extra_body if the default doesn't fit our latency budget.
 ```
 
 ### MiniMax M2.7
 ```
 MODEL_NAME="openai/minimaxai/minimax-m2.7"
-MODEL_BASE_URL="https://integrate.api.nvidia.com/v1"
-MODEL_API_KEY_ENV="NVIDIA_API_KEY"
-MODEL_TIMEOUT="600"
 ```
 
 ### gpt-oss
 ```
 MODEL_NAME="openai/openai/gpt-oss-120b"
-MODEL_BASE_URL="https://integrate.api.nvidia.com/v1"
-MODEL_API_KEY_ENV="NVIDIA_API_KEY"
-MODEL_TIMEOUT="600"
 ```
 
 ## Practical evaluation notes

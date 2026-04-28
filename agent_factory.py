@@ -86,6 +86,24 @@ def create_model() -> LiteLlm:
       MODEL_CACHE_TTL         — "5m" or "1h" (default 1h, anthropic/* only)
       MODEL_THINKING_BUDGET   — extended-thinking budget tokens (10000;
                                 set 0 to disable; anthropic/* only)
+      MODEL_THINKING          — tri-state cross-provider toggle, "on" /
+                                "off" / "" (default "" = no-op).
+                                When set, synthesizes the right dialect
+                                for the active model family:
+                                - anthropic/*: maps "off" to
+                                  thinking_budget=0; "on" keeps the
+                                  configured budget (or defaults to it).
+                                - openai/*: merges
+                                  `chat_template_kwargs.thinking` AND
+                                  `chat_template_kwargs.enable_thinking`
+                                  into `extra_body`, covering DeepSeek /
+                                  GLM (key `thinking`) and Qwen3
+                                  (key `enable_thinking`) in one shot.
+                                  Servers that don't recognize the keys
+                                  ignore them silently.
+                                User-supplied MODEL_EXTRA_BODY keys take
+                                precedence — this only fills missing
+                                ones, so per-model overrides still win.
       MODEL_TEMPERATURE       — sampling temperature (float). When unset,
                                 anthropic/* with thinking forces 1.0;
                                 everything else lets LiteLLM use the
@@ -107,6 +125,11 @@ def create_model() -> LiteLlm:
     num_retries = int(os.getenv("MODEL_NUM_RETRIES", "4"))
     cache_ttl = os.getenv("MODEL_CACHE_TTL", "1h").lower()
     thinking_budget = int(os.getenv("MODEL_THINKING_BUDGET", "10000"))
+
+    # Cross-provider thinking toggle (acts on top of MODEL_THINKING_BUDGET).
+    thinking_mode = os.getenv("MODEL_THINKING", "").strip().lower()
+    if thinking_mode == "off":
+        thinking_budget = 0  # disables Anthropic's thinking config below
     max_tokens = int(
         os.getenv("MODEL_MAX_TOKENS",
                   str(max(4096, thinking_budget + 4096)))
@@ -134,6 +157,15 @@ def create_model() -> LiteLlm:
     extra_body_str = os.getenv("MODEL_EXTRA_BODY", "").strip()
     if extra_body_str:
         kwargs["extra_body"] = json.loads(extra_body_str)
+
+    # MODEL_THINKING tri-state — synthesize provider-specific keys.
+    # Only fills MISSING keys, so user's MODEL_EXTRA_BODY wins on conflict.
+    if thinking_mode in ("on", "off") and not model_name.startswith("anthropic/"):
+        flag = (thinking_mode == "on")
+        eb = kwargs.setdefault("extra_body", {})
+        ctk = eb.setdefault("chat_template_kwargs", {})
+        ctk.setdefault("thinking", flag)         # DeepSeek / GLM family
+        ctk.setdefault("enable_thinking", flag)  # Qwen3 family
 
     if model_name.startswith("anthropic/"):
         control: dict = {"type": "ephemeral"}
