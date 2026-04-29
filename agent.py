@@ -3,6 +3,7 @@
 # Interactive agent with Binary Ninja MCP + Souffle Datalog tools
 
 import os
+import sys
 import asyncio
 import subprocess
 import tempfile
@@ -10,17 +11,26 @@ import json
 from pathlib import Path
 from typing import Optional
 
-from dotenv import load_dotenv
+# Ensure sibling-module imports work whether this file is loaded as a
+# package submodule (ADK's `from . import agent`) or run as a script
+# (`python agent.py`). Without this, `import pipeline` / `import
+# agent_factory` fail under ADK's package loader because bin_datalog/
+# is not automatically on sys.path.
+_PKG_DIR = Path(__file__).parent.resolve()
+if str(_PKG_DIR) not in sys.path:
+    sys.path.insert(0, str(_PKG_DIR))
 
-from google.adk.agents import LlmAgent
-from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset, StdioConnectionParams, StdioServerParameters
-from google.adk.tools import FunctionTool
-from google.adk.models.lite_llm import LiteLlm
+from dotenv import load_dotenv  # noqa: E402
 
-import pipeline
-from agent_factory import create_model
+from google.adk.agents import LlmAgent  # noqa: E402
+from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset, StdioConnectionParams, StdioServerParameters  # noqa: E402
+from google.adk.tools import FunctionTool  # noqa: E402
+from google.adk.models.lite_llm import LiteLlm  # noqa: E402
 
-load_dotenv(override=True)
+import pipeline  # noqa: E402
+from agent_factory import create_model  # noqa: E402
+
+load_dotenv(_PKG_DIR / ".env", override=True)
 
 # =============================================================================
 # Configuration
