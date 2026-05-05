@@ -1,0 +1,206 @@
+// =====================================================================
+// rules/bn_guard_dominates.dl — path-sensitive guard subsumption.
+//
+// Refines GuardedSink with a CFG-dominance check. The current
+// `GuardedSink` (in interproc.dl) fires when *any* Guard in the
+// function constrains the tainted operand via Flow. That admits two
+// classes of false positive we documented in the 2026-05-03 audit:
+//
+//   1. xmlSaveCtxtInit (libxml2): the signed loop guard
+//      `i < indent_nr` with `indent_nr` negative makes the loop body
+//      unreachable; the post-loop write is reached on the same
+//      negative-indent_nr path that the loop guard rejects, so
+//      indent_nr's check at the loop header dominates the post-loop
+//      write. The current `GuardedSink` flags this — but cannot say
+//      whether the guard is on the path; this rule checks dominance.
+//
+//   2. OJPEGReadHeaderInfoSecStreamDqt (libtiff): entry guard
+//      `if (m < 65) return 0` plus loop bound `m -= 65; while (m > 0)`
+//      together bound the unsafe index path. The guard at the entry
+//      check dominates the loop body where the unsafe op fires.
+//
+// Both of these survived the existing `GuardedSink` because it had no
+// CFG-dominance check. With this rule, a guard counts as
+// "dominating" only if there is no CFG path from the function's
+// entry block to the unsafe site's block that bypasses the guard's
+// block.
+//
+// Implementation note: full Lengauer–Tarjan dominator computation is
+// outside Souffle's natural strengths. We implement the cheaper
+// reach-skipping characterisation:
+//
+//   Dom(func, d, n) :- Reach(func, entry, d),
+//                      Reach(func, entry, n),
+//                      d != n,
+//                      !ReachSkip(func, entry, n, d).
+//
+// where `ReachSkip(func, s, t, skip)` is reachability from s to t in
+// the CFG with `skip` removed. This is O(V³) worst case; we
+// size-gate the same way `interproc.dl` size-gates Flow TC.
+//
+// Schema note: dominance is computed at MLIL **basic-block**
+// granularity, using `CFGBlockEdge(func, src_block_addr,
+// dst_block_addr)` (real instruction addresses on both ends) and
+// `BlockHead(func, instr_addr, block_addr)` to map a guard's or
+// sink's instruction address to its containing block.
+//
+// Output relations:
+//   Dominates(func, dominator_block, dominated_block)
+//   GuardDominates(func, unsafe_addr, guard_addr, guard_var, op, bound)
+//   BnGuardSubsumedSink(caller, callee, call_addr, ...) — refined GuardedSink
+//   BnUnguardedDom(caller, callee, call_addr, ...) — refined unguarded sinks
+// =====================================================================
+
+// ── Types ────────────────────────────────────────────────────────────
+.type Addr <: unsigned
+.type Sym  <: symbol
+.type Idx  <: unsigned
+.type Ver  <: unsigned
+
+// ── Inputs ───────────────────────────────────────────────────────────
+.decl CFGBlockEdge(func: Sym, src_block: Addr, dst_block: Addr)
+.input CFGBlockEdge
+
+.decl BlockHead(func: Sym, instr_addr: Addr, block_addr: Addr)
+.input BlockHead
+
+.decl Guard(func: Sym, addr: Addr, var: Sym, ver: Ver, op: Sym,
+            bound: Sym, bound_type: Sym)
+.input Guard
+
+.decl FormalParam(func: Sym, var: Sym, idx: Idx)
+.input FormalParam
+
+// BnFlow is pre-computed by bn_flow.dl (shared across Bn* rules).
+.decl BnFlow(func: Sym, src_var: Sym, src_ver: Ver,
+             dst_var: Sym, dst_ver: Ver)
+.input BnFlow
+
+.decl TaintedSink(caller: Sym, callee: Sym, call_addr: Addr,
+                  arg_idx: Idx, tainted_var: Sym, risk: Sym,
+                  origin: Sym)
+.input TaintedSink
+
+.decl TaintedVar(func: Sym, var: Sym, ver: Ver, origin: Sym, ctx: Addr)
+.input TaintedVar
+
+// ── Function entry block ────────────────────────────────────────────
+// The smallest block address per function is its entry block (BN's
+// MLIL emits block 0 first, and addresses are monotone in entry order
+// for typical compilations). Falls back gracefully on the empty case.
+.decl FuncEntry(func: Sym, block_addr: Addr)
+FuncEntry(f, m) :-
+    CFGBlockEdge(f, _, _),
+    m = min a : { CFGBlockEdge(f, a, _) }.
+// Fallback: function with a single block and no internal edges has no
+// CFGBlockEdge with src=block; pick from BlockHead.
+FuncEntry(f, m) :-
+    BlockHead(f, _, _),
+    !CFGBlockEdge(f, _, _),
+    m = min a : { BlockHead(f, _, a) }.
+
+// ── Function size gate: only run dominance on tractable functions ──
+.decl FuncCFGSize(func: Sym, sz: number)
+FuncCFGSize(f, n) :-
+    CFGBlockEdge(f, _, _),
+    n = count : { CFGBlockEdge(f, _, _) }.
+
+#ifndef CFG_SIZE_GATE
+#define CFG_SIZE_GATE 2000
+#endif
+
+.decl FuncCFGTractable(func: Sym)
+FuncCFGTractable(f) :- FuncCFGSize(f, n), n < CFG_SIZE_GATE.
+// Single-block functions: no edges, but they are trivially tractable.
+FuncCFGTractable(f) :-
+    BlockHead(f, _, _),
+    !CFGBlockEdge(f, _, _).
+
+// ── Reach: CFG transitive closure at block level (size-gated) ──────
+.decl Reach(func: Sym, src: Addr, dst: Addr)
+Reach(f, s, t) :- CFGBlockEdge(f, s, t), FuncCFGTractable(f).
+Reach(f, s, t) :- Reach(f, s, m), CFGBlockEdge(f, m, t).
+
+// ── ReachSkip: block-level reach with `skip` removed.
+// We restrict `skip` to blocks containing a Guard — only those can
+// be candidate dominators in our subsumption check.
+.decl GuardBlock(func: Sym, block_addr: Addr)
+GuardBlock(f, b) :-
+    Guard(f, ga, _, _, _, _, _),
+    BlockHead(f, ga, b).
+
+.decl ReachSkip(func: Sym, src: Addr, dst: Addr, skip: Addr)
+ReachSkip(f, s, t, k) :-
+    CFGBlockEdge(f, s, t), s != k, t != k,
+    GuardBlock(f, k),
+    FuncCFGTractable(f).
+ReachSkip(f, s, t, k) :-
+    ReachSkip(f, s, m, k),
+    CFGBlockEdge(f, m, t), t != k.
+
+// ── Dominates(func, dominator_block, dominated_block) ──────────────
+// d dominates n iff every path from entry to n passes through d.
+// Equivalent: entry cannot reach n with d removed.
+.decl Dominates(func: Sym, dominator: Addr, dominated: Addr)
+.output Dominates
+
+Dominates(f, d, n) :-
+    FuncEntry(f, e),
+    GuardBlock(f, d),
+    Reach(f, e, n), n != e,
+    Reach(f, e, d), d != n,
+    !ReachSkip(f, e, n, d).
+// A block trivially dominates itself when it contains a guard and is
+// reachable from entry — captures the "guard and unsafe op in the
+// same block" common case.
+Dominates(f, b, b) :-
+    GuardBlock(f, b),
+    FuncEntry(f, e),
+    ( e = b ; Reach(f, e, b) ).
+
+// ── GuardDominates: a Guard at `ga` dominates the unsafe site `ua` ─
+.decl GuardDominates(func: Sym, unsafe_addr: Addr, guard_addr: Addr,
+                     guard_var: Sym, op: Sym, bound: Sym)
+.output GuardDominates
+
+GuardDominates(f, ua, ga, gv, op, bound) :-
+    Guard(f, ga, gv, _, op, bound, _),
+    BlockHead(f, ga, gb),
+    BlockHead(f, ua, ub),
+    Dominates(f, gb, ub).
+
+// ── Refined sink: TaintedSink subsumed by a dominating guard ───────
+.decl BnGuardSubsumedSink(caller: Sym, callee: Sym, call_addr: Addr,
+                          guard_var: Sym, guard_op: Sym,
+                          guard_bound: Sym, guard_addr: Addr)
+.output BnGuardSubsumedSink
+
+// Direct: the tainted operand is itself the guarded variable.
+BnGuardSubsumedSink(caller, callee, ca, tv, op, bound, ga) :-
+    TaintedSink(caller, callee, ca, _, tv, _, _),
+    TaintedVar(caller, tv, tver, _, _),
+    Guard(caller, ga, tv, tver, op, bound, _),
+    BlockHead(caller, ga, gb),
+    BlockHead(caller, ca, cb),
+    Dominates(caller, gb, cb).
+
+// Indirect: a guarded var flows (via BnFlow TC) to the tainted operand.
+BnGuardSubsumedSink(caller, callee, ca, gv, op, bound, ga) :-
+    TaintedSink(caller, callee, ca, _, tv, _, _),
+    TaintedVar(caller, tv, tver, _, _),
+    BnFlow(caller, gv, gver, tv, tver),
+    Guard(caller, ga, gv, gver, op, bound, _),
+    BlockHead(caller, ga, gb),
+    BlockHead(caller, ca, cb),
+    Dominates(caller, gb, cb).
+
+// ── Refined unguarded relation: TaintedSink that no dominating
+//    guard subsumes. Strictly tighter than BnUnguardedTaintedSink. ──
+.decl BnUnguardedDom(caller: Sym, callee: Sym, call_addr: Addr,
+                     arg_idx: Idx, tainted_var: Sym,
+                     risk: Sym, origin: Sym)
+.output BnUnguardedDom
+
+BnUnguardedDom(caller, callee, ca, idx, tv, risk, origin) :-
+    TaintedSink(caller, callee, ca, idx, tv, risk, origin),
+    !BnGuardSubsumedSink(caller, callee, ca, _, _, _, _).

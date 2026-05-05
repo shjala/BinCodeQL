@@ -78,8 +78,9 @@ class FactCollector:
     ALL_FACT_FILES = [
         "ActualArg.facts", "AddressOf.facts", "AllocSite.facts",
         "ArithOp.facts",
+        "BlockHead.facts",
         "BufferWriteSource.facts", "CallAddrArg.facts", "CallArgConst.facts",
-        "CFGEdge.facts", "Call.facts", "Cast.facts",
+        "CFGBlockEdge.facts", "CFGEdge.facts", "Call.facts", "Cast.facts",
         "DangerousSink.facts", "Def.facts",
         "EntryTaint.facts",
         "FieldRead.facts", "FieldWrite.facts", "FieldWriteValue.facts",
@@ -828,6 +829,33 @@ def extract_function_facts(bv, func, fc, verbose=False):
             print(f"  [SKIP] {func_name}: no SSA form", file=sys.stderr)
         return
 
+    # Block-level CFG: emit CFGBlockEdge(func, src_block_addr, dst_block_addr)
+    # using real instruction addresses on both ends, plus
+    # BlockHead(func, instr_addr, block_addr) so downstream rules can
+    # look up the block of any instruction. Needed for proper CFG
+    # transitive closure (the legacy CFGEdge mixes instr-addr `from`
+    # with bb-index `to` and is therefore non-composing).
+    try:
+        for bb in mlil.basic_blocks:
+            try:
+                bb_start_addr = mlil[bb.start].address
+            except Exception:
+                continue
+            for i in range(bb.start, bb.end):
+                try:
+                    fc.add("BlockHead", func_name, mlil[i].address, bb_start_addr)
+                except Exception:
+                    pass
+            for edge in bb.outgoing_edges:
+                try:
+                    succ_start_addr = mlil[edge.target.start].address
+                except Exception:
+                    continue
+                fc.add("CFGBlockEdge", func_name, bb_start_addr, succ_start_addr)
+    except Exception as e:
+        if verbose:
+            print(f"  [WARN] {func_name}: block-CFG extraction: {e}", file=sys.stderr)
+
     # Track version-0 vars for FormalParam detection
     defined_v0 = set()
     used_v0 = {}  # var_name -> min_addr
@@ -1122,11 +1150,15 @@ def extract_function_facts(bv, func, fc, verbose=False):
             # CFG edges — true and false targets
             true_bb = insn.true
             false_bb = insn.false
-            # These are basic block indices; convert to addresses
+            # `basic_blocks[i].start` is an MLIL instruction *index*; convert
+            # to a real address via mlil[idx].address so CFGEdge composes for
+            # transitive-closure rules (Reach, Dominates, BnCFGReach).
             if true_bb < len(mlil.basic_blocks):
-                fc.add("CFGEdge", func_name, addr, mlil.basic_blocks[true_bb].start)
+                fc.add("CFGEdge", func_name, addr,
+                       mlil[mlil.basic_blocks[true_bb].start].address)
             if false_bb < len(mlil.basic_blocks):
-                fc.add("CFGEdge", func_name, addr, mlil.basic_blocks[false_bb].start)
+                fc.add("CFGEdge", func_name, addr,
+                       mlil[mlil.basic_blocks[false_bb].start].address)
 
             # Guard extraction: if condition is a comparison, emit Guard fact
             # Guard schema: func, addr, var, ver, op, bound, bound_type
@@ -1162,7 +1194,7 @@ def extract_function_facts(bv, func, fc, verbose=False):
             target_bb = insn.dest
             if target_bb < len(mlil.basic_blocks):
                 fc.add("CFGEdge", func_name, addr,
-                        mlil.basic_blocks[target_bb].start)
+                       mlil[mlil.basic_blocks[target_bb].start].address)
             continue
 
         # ── RET: return expr ──

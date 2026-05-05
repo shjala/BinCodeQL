@@ -53,6 +53,73 @@ def souffle_cmd(
     return cmd
 
 
+def stage_signature_facts(
+    facts_dir: str | Path,
+    output_dir: str | Path,
+    rules_dir: str | Path,
+    timeout_seconds: int = 30,
+    jobs: str = "1",
+    compile_mode: bool = False,
+) -> dict:
+    """Run signatures.dl to materialize TaintTransfer/BufferWriteSource/TaintKill.
+
+    signatures.dl declares these relations as constants (`TaintTransfer("read",
+    "arg1", "external").` etc.) and emits them via `.output`. Downstream
+    interproc.dl/taint.dl declare the same relations with `.input`, expecting
+    facts files. This staging step bridges the two: runs signatures.dl, then
+    copies the resulting CSVs into facts_dir as .facts so interproc.dl can
+    seed taint from libc sources (read/mmap/getopt/etc.).
+
+    Without this step, TaintTransfer.facts is empty and TaintedVar = ∅.
+
+    Args:
+        facts_dir: Directory where `*.facts` will be written.
+        output_dir: Souffle CSV output directory (signatures.dl will write
+                    TaintTransfer.csv etc. here).
+        rules_dir: Directory containing signatures.dl.
+        timeout_seconds: Souffle timeout (signatures.dl is small — 30s ample).
+
+    Returns:
+        Dict with row counts of each staged signature relation.
+    """
+    fdir = Path(facts_dir)
+    odir = Path(output_dir)
+    rdir = Path(rules_dir)
+    fdir.mkdir(parents=True, exist_ok=True)
+    odir.mkdir(parents=True, exist_ok=True)
+
+    sig_dl = rdir / "signatures.dl"
+    if not sig_dl.exists():
+        return {"error": f"Rule file not found: {sig_dl}"}
+
+    try:
+        r = subprocess.run(
+            souffle_cmd(sig_dl, fdir, odir, jobs, compile_mode),
+            capture_output=True, text=True, timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired:
+        return {"error": f"signatures.dl timed out after {timeout_seconds}s"}
+
+    result: dict = {"return_code": r.returncode}
+    if r.returncode != 0:
+        result["stderr"] = r.stderr.strip()
+        return result
+
+    for rel in ("TaintTransfer", "BufferWriteSource", "TaintKill"):
+        src = odir / f"{rel}.csv"
+        dst = fdir / f"{rel}.facts"
+        if src.exists():
+            content = src.read_text()
+            dst.write_text(content)
+            stripped = content.strip()
+            result[rel] = stripped.count("\n") + 1 if stripped else 0
+        else:
+            dst.touch()
+            result[rel] = 0
+
+    return result
+
+
 def run_taint_pipeline(
     facts_dir: str | Path,
     output_dir: str | Path,
@@ -192,6 +259,11 @@ _BN_STAGE_AFTER: dict[str, list[tuple[str, str]]] = {
                              ("BnSentinelBuf.csv",            "BnSentinelBuf.facts"),
                              ("BnSentinelNarrowAlloc.csv",    "BnSentinelNarrowAlloc.facts"),
                              ("BnSentinelCollisionRisk.csv",  "BnSentinelCollisionRisk.facts")],
+    "bn_null_deref.dl":     [("BnNullDeref.csv",              "BnNullDeref.facts")],
+    "bn_guard_dominates.dl": [("GuardDominates.csv",           "GuardDominates.facts"),
+                              ("BnGuardSubsumedSink.csv",      "BnGuardSubsumedSink.facts"),
+                              ("BnUnguardedDom.csv",           "BnUnguardedDom.facts"),
+                              ("Dominates.csv",                "Dominates.facts")],
     # Stage buffer-attribution evidence so triage's ad-hoc Datalog
     # queries can `.input` these relations from the facts dir.
     # Both the strict (single-hop) and transitive (multi-hop)
@@ -221,6 +293,13 @@ _BN_RULE_FILES = [
     "bn_arith_overflow.dl",
     "bn_width_mismatch.dl",
     "bn_sentinel_init.dl",
+    "bn_null_deref.dl",
+    # Path-sensitive guard subsumption (CFG-dominance refinement of
+    # GuardedSink). Requires CFGBlockEdge + BlockHead from the
+    # extractor. Runs after structural Bn* rules so its outputs
+    # (BnGuardSubsumedSink, BnUnguardedDom) can refine downstream
+    # triage without affecting earlier passes.
+    "bn_guard_dominates.dl",
     "bn_findings.dl",
     # Cross-function buffer-attribution evidence chain — derives
     # AllocFieldStash, ConsumerFieldLoad, BufferReachesConsumer,
