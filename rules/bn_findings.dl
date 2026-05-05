@@ -86,6 +86,10 @@
                               sentinel_val: Sym, origin: Sym, tier: Sym)
 .input BnSentinelCollisionRisk
 
+.decl BnNullDeref(func: Sym, alloc_addr: Addr, deref_addr: Addr,
+                  var: Sym, deref_kind: Sym)
+.input BnNullDeref
+
 // ── Unified finding ──────────────────────────────────────────────────
 // severity: "high" (tainted + exploitable-shape) or "medium" (structural).
 // category: short tag for triage filtering.
@@ -174,4 +178,63 @@ BnFinding(f, ia, "low", "sentinel_collision_structural", buf,
           cat(" counter=", cv)))) :-
     BnSentinelCollisionRisk(f, ia, _, buf, cv, _, sval, _, "structural").
 
+// Null-pointer dereference: pointer returned by allocator dereferenced
+// before any reaching null-check guard. Medium severity by default
+// (structural pattern; reachability via taint promotes to high).
+BnFinding(f, da, "medium", cat("null_deref_", kind), v,
+          cat("alloc@", to_string(aa))) :-
+    BnNullDeref(f, aa, da, v, kind).
+
 .output BnFinding
+
+// ── BnFindingDomGuarded: structural-defect findings whose variable is
+//    constrained by a CFG-path-dominating Guard. Computed from
+//    bn_guard_dominates.dl outputs (`GuardDominates`) staged as facts.
+//
+//    This relation does NOT remove rows from BnFinding — keeping BnFinding
+//    complete preserves the audit trail and downstream consumer
+//    compatibility. Instead, it provides the triage layer with a
+//    pre-computed evidence relation: "for this finding, here is a
+//    CFG-dominating guard whose variable is the (or flows to) the
+//    finding's variable."
+//
+//    A finding is dom-guarded when there exists a Guard at addr `ga`
+//    such that:
+//      1. ga path-dominates the finding's address (Dominates check
+//         already inside GuardDominates), AND
+//      2. the guard variable is the finding variable, OR the guard
+//         variable flows (intra-procedurally) into the finding variable.
+//
+//    Output schema lets triage cite exact (guard_addr, op, bound) when
+//    explaining why a finding is suppressed/downgraded.
+.decl GuardDominates(func: Sym, unsafe_addr: Addr, guard_addr: Addr,
+                     guard_var: Sym, op: Sym, bound: Sym)
+.input GuardDominates
+
+.decl BnFlow(func: Sym, src_var: Sym, src_ver: Ver,
+             dst_var: Sym, dst_ver: Ver)
+.input BnFlow
+
+.decl BnFindingDomGuarded(func: Sym, finding_addr: Addr, category: Sym,
+                          var: Sym, guard_addr: Addr, op: Sym, bound: Sym)
+.output BnFindingDomGuarded
+
+// Direct: finding's variable is the guard variable.
+BnFindingDomGuarded(f, fa, ck, v, ga, op, bound) :-
+    BnFinding(f, fa, _, ck, v, _),
+    GuardDominates(f, fa, ga, v, op, bound).
+
+// Indirect: guard variable flows to finding variable (intra-procedural).
+BnFindingDomGuarded(f, fa, ck, v, ga, op, bound) :-
+    BnFinding(f, fa, _, ck, v, _),
+    GuardDominates(f, fa, ga, gv, op, bound),
+    BnFlow(f, gv, _, v, _).
+
+// Strictly-tighter unguarded view: BnFinding rows with no dom-guard.
+.decl BnFindingDomUnguarded(func: Sym, addr: Addr, severity: Sym,
+                            category: Sym, var: Sym, detail: Sym)
+.output BnFindingDomUnguarded
+
+BnFindingDomUnguarded(f, a, sev, c, v, d) :-
+    BnFinding(f, a, sev, c, v, d),
+    !BnFindingDomGuarded(f, a, c, v, _, _, _).

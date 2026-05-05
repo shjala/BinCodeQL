@@ -264,6 +264,8 @@ _BN_STAGE_AFTER: dict[str, list[tuple[str, str]]] = {
                               ("BnGuardSubsumedSink.csv",      "BnGuardSubsumedSink.facts"),
                               ("BnUnguardedDom.csv",           "BnUnguardedDom.facts"),
                               ("Dominates.csv",                "Dominates.facts")],
+    "bn_findings.dl":        [("BnFindingDomGuarded.csv",      "BnFindingDomGuarded.facts"),
+                              ("BnFindingDomUnguarded.csv",    "BnFindingDomUnguarded.facts")],
     # Stage buffer-attribution evidence so triage's ad-hoc Datalog
     # queries can `.input` these relations from the facts dir.
     # Both the strict (single-hop) and transitive (multi-hop)

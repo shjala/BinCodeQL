@@ -453,6 +453,14 @@ under 50ms).
 
 ## Per-category relation hints (load only what's listed)
 
+For ALL bounded-bug categories below, also load `BnFindingDomGuarded`
+and `BnFindingDomUnguarded` (precomputed — see step 4a). One row in
+`BnFindingDomGuarded(func, addr, category, var, guard_addr, op, bound)`
+indexed at the finding's `(func, addr, category)` is the fastest
+refutation path; a row in `BnFindingDomUnguarded` confirms no
+precomputed dominating guard exists and the regular methodology applies.
+
+
 - tainted_unbounded_counter / unbounded_counter →
    ArithOp, Guard, CFGEdge, VarWidth, PhiSource
 - tainted_counter_as_index →
@@ -482,6 +490,29 @@ under 50ms).
 4. Check guards / sanitizers in the same function for bounds on the
    implicated var. For tainted_* findings, call `tool_read_taint_chain`
    to confirm the origin actually propagates.
+4a. **Path-dominating guard check.** Before chasing the data flow,
+    look up `BnFindingDomGuarded(func, finding_addr, category, var,
+    guard_addr, op, bound)` for this finding. A row here means a
+    Guard at `guard_addr` CFG-dominates the finding site AND
+    constrains the finding's variable (directly or via BnFlow). When
+    present, the constraint applies on every execution path that can
+    reach the finding — strong refutation evidence for `false_positive`
+    on bounded-bug categories (`tainted_unbounded_counter`,
+    `tainted_counter_as_index`, `tainted_overflow_at_sink`,
+    `tainted_loop_bound`, `unguarded_cast_*`, `unbounded_counter`).
+    Cite the row in `evidence_cited` and quote the
+    (op, bound) pair in your reasoning. Caveats:
+    - The bound may be too loose (e.g. `lt 0x7fffffff`); evaluate
+      whether it actually rules out the unsafe condition.
+    - If the bound is variable (`bound_type=var`), the constraint is
+      symbolic — note that you cannot conclude safety without the
+      bound's own provenance.
+    - For `*_taint_*` categories, dom-guarded does not erase the
+      taint axis (a) data-flow path; it constrains the value range
+      along that path. State both axes when applicable.
+    Absence of a `BnFindingDomGuarded` row does NOT exonerate — it
+    only means no precomputed dominating guard was found. Continue
+    with the regular guard check below.
 5. Check 1-hop callers/callees if the finding involves a parameter or
    return value (input control or out-of-function sanitization).
 5b. **Compose Datalog as needed.** If a precise question came up
