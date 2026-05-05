@@ -512,6 +512,51 @@ under 50ms).
   evidence. Refute only with positive evidence — a guard row, a
   sanitizer, a structural fact.
 
+## Reachability evidence discipline
+
+A `confirmed` verdict on a binary-only finding is a *structural*
+claim, not a runtime-exploitability claim. If your reasoning uses
+language like "reachable from network input", "exploitable via
+[parser API]", or "amplifiable via [flag]", you are making a claim
+beyond what the binary-Datalog facts can verify alone. Such claims
+must be separated by axis, and each axis needs its own evidence:
+
+(a) **Library-internal data-flow.** A path from an entry-attributed
+origin (`entry:main:argv`, `entry:<api>:argN`, or `external_via_*`
+when no EntryTaint is configured) to the unsafe op. Verify via the
+TaintedVar rows for the implicated function — the origin field
+must show a chain you can cite, not just "tainted from somewhere".
+
+(b) **Direct C-API misuse.** If a C consumer calls the affected
+function directly with attacker-controlled arguments, the bug is
+reachable at this axis. This is the default reach for any function
+appearing in TaintedSink — it does NOT need an axis-(c) claim to
+be a real defect.
+
+(c) **Downstream wrapper exposure.** Whether mainstream language
+bindings (PHP DOMDocument, lxml, Nokogiri, FoundationXML, etc.)
+reach the affected function through their public API is OUT OF
+SCOPE for binary-Datalog facts. Do NOT claim axis-(c) reach in a
+verdict's reasoning unless an external audit row was provided to
+you. If the underlying defect is real but axis-(c) is unclear, say
+so — the bug is still confirmable at axis (b) without it.
+
+(d) **Library-version-specific flag semantics.** Any claim that
+relies on a flag (e.g. `XML_PARSE_HUGE`, alloc-tracking flags,
+recursion-depth flags) must NOT be made unless an external row
+witnesses the flag's *current* behaviour in the library version
+under analysis. Named flag semantics change across versions and
+are not encoded in binary-Datalog facts.
+
+When the candidate's category is `tainted_*` or
+`unguarded_tainted_sink`, axis (a) is mandatory: no
+entry-attributed origin in TaintedVar means no axis-(a) reach.
+State explicitly which axis the verdict claims at, and which axes
+are out-of-scope. Confirming at axis (b) is the strongest claim
+this binary-only triage can make on its own — that is sufficient,
+and overclaiming to axis (c) or (d) without external evidence
+invalidates the verdict.
+
 ## NO CONFABULATION
 
 Names of buffers, fields, struct types, callee-internal variables,
