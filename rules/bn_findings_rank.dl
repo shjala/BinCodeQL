@@ -1,0 +1,226 @@
+// =====================================================================
+// rules/bn_findings_rank.dl — cluster & rank BnFindings into a triage-
+//                              ready Top-K, with tight/loose dom-guard
+//                              refinement.
+//
+// Motivation: BnFinding emits ~30K rows on libxml2-class binaries.
+// Even after BnFindingDomUnguarded (4.6K rows on libxml2-vuln), no LLM
+// triage budget covers the full set per binary. This rule produces a
+// scored, deduplicated Top-K so triage runs on ~50–200 cluster heads
+// instead of every finding.
+//
+// Outputs:
+//   BnGuardBoundTight(func, guard_addr, var, ver, op, bound_n)
+//   BnFindingDomGuardedTight     — finding constrained by a tight,
+//                                    constant, path-dominating bound
+//   BnFindingDomGuardedLoose     — dom-guarded but bound is symbolic,
+//                                    expression-typed, or numerically
+//                                    too large to constrain
+//   BnFindingCluster(func, block_addr, category, repr_addr, severity, sz)
+//   BnFindingScore(func, block_addr, category, repr_addr, score)
+//   BnFindingRanked              — top-scored cluster heads (ranked
+//                                    relation; downstream tools take
+//                                    the top-K by score)
+// =====================================================================
+
+.type Addr <: unsigned
+.type Sym  <: symbol
+.type Ver  <: unsigned
+
+// ── Staged inputs ───────────────────────────────────────────────────
+.decl BnFinding(func: Sym, addr: Addr, severity: Sym,
+                category: Sym, var: Sym, detail: Sym)
+.input BnFinding
+
+.decl BnFindingDomGuarded(func: Sym, finding_addr: Addr, category: Sym,
+                          var: Sym, guard_addr: Addr, op: Sym, bound: Sym)
+.input BnFindingDomGuarded
+
+.decl BnFindingDomUnguarded(func: Sym, addr: Addr, severity: Sym,
+                            category: Sym, var: Sym, detail: Sym)
+.input BnFindingDomUnguarded
+
+.decl Guard(func: Sym, addr: Addr, var: Sym, ver: Ver, op: Sym,
+            bound: Sym, bound_type: Sym)
+.input Guard
+
+.decl VarWidth(func: Sym, var: Sym, ver: Ver, width: unsigned)
+.input VarWidth
+
+.decl BlockHead(func: Sym, instr_addr: Addr, block_addr: Addr)
+.input BlockHead
+
+.decl BnUnguardedDom(caller: Sym, callee: Sym, call_addr: Addr,
+                     arg_idx: unsigned, tainted_var: Sym,
+                     risk: Sym, origin: Sym)
+.input BnUnguardedDom
+
+.decl BnTaintedOverflowAtSink(func: Sym, arith_addr: Addr,
+                              sink_addr: Addr, var: Sym,
+                              callee: Sym, idx: unsigned, origin: Sym)
+.input BnTaintedOverflowAtSink
+
+// ── Tight vs. loose dom-guard ───────────────────────────────────────
+// A guard is "tight" iff its bound is a numeric constant within the
+// constraining range. Threshold 0x10000 (65536) is a heuristic: any
+// concrete bound smaller than this actively constrains typical buffer
+// or array-index ops. Larger bounds are effectively type-max and do
+// not constrain.
+//
+// Variable bounds (`bound_type=var`) and expression bounds
+// (`bound_type=expr`) cannot be statically classified — treated as
+// loose. The LLM tier evaluates them.
+#ifndef BN_TIGHT_BOUND_MAX
+#define BN_TIGHT_BOUND_MAX 65536
+#endif
+
+.decl BnGuardBoundTight(func: Sym, guard_addr: Addr, var: Sym, ver: Ver,
+                        op: Sym, bound_n: number)
+.output BnGuardBoundTight
+
+BnGuardBoundTight(f, ga, v, ver, op, n) :-
+    Guard(f, ga, v, ver, op, bs, "const"),
+    n = to_number(bs),
+    n > 0,
+    n < BN_TIGHT_BOUND_MAX.
+
+// A finding is dom-guarded-tight iff some dom-guard has a tight bound.
+// (At least one tight dom-guard suffices to call it constrained.)
+.decl BnFindingDomGuardedTight(func: Sym, addr: Addr, category: Sym,
+                               var: Sym, guard_addr: Addr, op: Sym,
+                               bound_n: number)
+.output BnFindingDomGuardedTight
+
+BnFindingDomGuardedTight(f, fa, c, v, ga, op, n) :-
+    BnFindingDomGuarded(f, fa, c, v, ga, op, _),
+    BnGuardBoundTight(f, ga, _, _, op, n).
+
+// Loose: dom-guarded but no tight projection.
+.decl BnFindingDomGuardedLoose(func: Sym, addr: Addr, category: Sym,
+                               var: Sym, guard_addr: Addr, op: Sym,
+                               bound: Sym)
+.output BnFindingDomGuardedLoose
+
+BnFindingDomGuardedLoose(f, fa, c, v, ga, op, b) :-
+    BnFindingDomGuarded(f, fa, c, v, ga, op, b),
+    !BnFindingDomGuardedTight(f, fa, c, v, _, _, _).
+
+// ── Cluster: collapse findings to (func, block_addr, category) ─────
+// Multiple SSA versions and var aliases of the same root cause emit
+// duplicate findings at the same MLIL block. The cluster head is the
+// minimum-addr finding in the block.
+.decl BnFindingBlock(func: Sym, block_addr: Addr, category: Sym,
+                     finding_addr: Addr, severity: Sym, var: Sym)
+BnFindingBlock(f, b, c, a, sev, v) :-
+    BnFinding(f, a, sev, c, v, _),
+    BlockHead(f, a, b).
+
+.decl _SevRank(sev: Sym, r: number)
+_SevRank("high", 3).
+_SevRank("medium", 2).
+_SevRank("low", 1).
+
+.decl _BnClusterMaxSevRank(func: Sym, block_addr: Addr, category: Sym,
+                           max_r: number)
+_BnClusterMaxSevRank(f, b, c, m) :-
+    BnFindingBlock(f, b, c, _, _, _),
+    m = max r : { BnFindingBlock(f, b, c, _, sev, _), _SevRank(sev, r) }.
+
+.decl BnFindingCluster(func: Sym, block_addr: Addr, category: Sym,
+                       repr_addr: Addr, severity: Sym, members: number)
+.output BnFindingCluster
+
+BnFindingCluster(f, b, c, ra, top_sev, n) :-
+    BnFindingBlock(f, b, c, _, _, _),
+    ra = min a : { BnFindingBlock(f, b, c, a, _, _) },
+    n  = count : { BnFindingBlock(f, b, c, _, _, _) },
+    _BnClusterMaxSevRank(f, b, c, max_r),
+    _SevRank(top_sev, max_r).
+
+// ── Score components ────────────────────────────────────────────────
+.decl _SevScore(sev: Sym, s: number)
+_SevScore("high", 3).
+_SevScore("medium", 2).
+_SevScore("low", 1).
+
+// Sink-coupling: cluster contains a finding whose addr is a sink-side
+// arith-overflow site or an unguarded dangerous-sink call.
+.decl BnClusterSinkCoupled(func: Sym, block_addr: Addr, category: Sym)
+BnClusterSinkCoupled(f, b, c) :-
+    BnFindingCluster(f, b, c, _, _, _),
+    BnFindingBlock(f, b, c, fa, _, _),
+    ( BnTaintedOverflowAtSink(f, _, fa, _, _, _, _)
+    ; BnTaintedOverflowAtSink(f, fa, _, _, _, _, _)
+    ; BnUnguardedDom(f, _, fa, _, _, _, _)
+    ).
+
+// Unguarded: cluster has at least one BnFindingDomUnguarded member.
+.decl BnClusterUnguarded(func: Sym, block_addr: Addr, category: Sym)
+BnClusterUnguarded(f, b, c) :-
+    BnFindingDomUnguarded(f, fa, _, c, _, _),
+    BlockHead(f, fa, b),
+    BnFindingCluster(f, b, c, _, _, _).
+
+.decl BnClusterHasLoose(func: Sym, block_addr: Addr, category: Sym)
+BnClusterHasLoose(f, b, c) :-
+    BnFindingDomGuardedLoose(f, fa, c, _, _, _, _),
+    BlockHead(f, fa, b),
+    BnFindingCluster(f, b, c, _, _, _).
+
+// Dom-guarded-tight: cluster is fully dom-guarded AND has no loose
+// finding (so every finding-member's dom-guard is constant-tight).
+// Strong FP signal.
+.decl BnClusterDomTight(func: Sym, block_addr: Addr, category: Sym)
+BnClusterDomTight(f, b, c) :-
+    BnFindingCluster(f, b, c, _, _, _),
+    !BnClusterUnguarded(f, b, c),
+    !BnClusterHasLoose(f, b, c).
+
+// ── Scored cluster head ─────────────────────────────────────────────
+//   base       = severity   (1..3)
+//   + 2 if sink-coupled
+//   + 2 if unguarded
+//   - 4 if dom-guarded-tight (effectively FP — push to bottom)
+//
+// Souffle has no ternary; we materialise the score via summed
+// component relations.
+.decl _Sink2(func: Sym, block_addr: Addr, category: Sym, n: number)
+_Sink2(f, b, c, 2)  :- BnClusterSinkCoupled(f, b, c).
+_Sink2(f, b, c, 0)  :- BnFindingCluster(f, b, c, _, _, _),
+                       !BnClusterSinkCoupled(f, b, c).
+
+.decl _Ung2(func: Sym, block_addr: Addr, category: Sym, n: number)
+_Ung2(f, b, c, 2)   :- BnClusterUnguarded(f, b, c).
+_Ung2(f, b, c, 0)   :- BnFindingCluster(f, b, c, _, _, _),
+                       !BnClusterUnguarded(f, b, c).
+
+.decl _TightPen(func: Sym, block_addr: Addr, category: Sym, n: number)
+_TightPen(f, b, c, 4) :- BnClusterDomTight(f, b, c).
+_TightPen(f, b, c, 0) :- BnFindingCluster(f, b, c, _, _, _),
+                         !BnClusterDomTight(f, b, c).
+
+.decl BnFindingScore(func: Sym, block_addr: Addr, category: Sym,
+                     repr_addr: Addr, score: number)
+.output BnFindingScore
+
+BnFindingScore(f, b, c, ra, score) :-
+    BnFindingCluster(f, b, c, ra, sev, _),
+    _SevScore(sev, base),
+    _Sink2(f, b, c, sink_bonus),
+    _Ung2(f, b, c, unguarded_bonus),
+    _TightPen(f, b, c, tight_penalty),
+    score = base + sink_bonus + unguarded_bonus - tight_penalty.
+
+// Top-K projection: clusters with score >= cutoff are "ranked".
+// Cutoff is a soft default; downstream consumers may sort and take K.
+#ifndef BN_RANK_MIN_SCORE
+#define BN_RANK_MIN_SCORE 4
+#endif
+
+.decl BnFindingRanked(func: Sym, block_addr: Addr, category: Sym,
+                      repr_addr: Addr, score: number)
+.output BnFindingRanked
+
+BnFindingRanked(f, b, c, ra, s) :-
+    BnFindingScore(f, b, c, ra, s),
+    s >= BN_RANK_MIN_SCORE.

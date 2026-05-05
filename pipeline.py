@@ -264,8 +264,15 @@ _BN_STAGE_AFTER: dict[str, list[tuple[str, str]]] = {
                               ("BnGuardSubsumedSink.csv",      "BnGuardSubsumedSink.facts"),
                               ("BnUnguardedDom.csv",           "BnUnguardedDom.facts"),
                               ("Dominates.csv",                "Dominates.facts")],
-    "bn_findings.dl":        [("BnFindingDomGuarded.csv",      "BnFindingDomGuarded.facts"),
+    "bn_findings.dl":        [("BnFinding.csv",                "BnFinding.facts"),
+                              ("BnFindingDomGuarded.csv",      "BnFindingDomGuarded.facts"),
                               ("BnFindingDomUnguarded.csv",    "BnFindingDomUnguarded.facts")],
+    "bn_findings_rank.dl":   [("BnFindingCluster.csv",         "BnFindingCluster.facts"),
+                              ("BnFindingScore.csv",           "BnFindingScore.facts"),
+                              ("BnFindingRanked.csv",          "BnFindingRanked.facts"),
+                              ("BnFindingDomGuardedTight.csv", "BnFindingDomGuardedTight.facts"),
+                              ("BnFindingDomGuardedLoose.csv", "BnFindingDomGuardedLoose.facts"),
+                              ("BnGuardBoundTight.csv",        "BnGuardBoundTight.facts")],
     # Stage buffer-attribution evidence so triage's ad-hoc Datalog
     # queries can `.input` these relations from the facts dir.
     # Both the strict (single-hop) and transitive (multi-hop)
@@ -303,6 +310,12 @@ _BN_RULE_FILES = [
     # triage without affecting earlier passes.
     "bn_guard_dominates.dl",
     "bn_findings.dl",
+    # Cluster + rank BnFinding into a triage-ready Top-K. Refines
+    # dom-guards into tight (constant, constraining) vs loose (symbolic
+    # or large-constant) and emits BnFindingScore / BnFindingRanked
+    # so triage can focus on the ~100-200 highest-priority cluster
+    # heads instead of all ~30K raw findings.
+    "bn_findings_rank.dl",
     # Cross-function buffer-attribution evidence chain — derives
     # AllocFieldStash, ConsumerFieldLoad, BufferReachesConsumer,
     # Uint16TruncStoreOnAllocBuffer. Not a finding-producing rule;
