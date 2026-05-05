@@ -1,0 +1,150 @@
+// =====================================================================
+// rules/entry_candidates.dl — enumerate candidate attack-surface entry
+// points for an LLM-driven entry-point selection step.
+//
+// USAGE:
+//     souffle -F <facts_dir> -D <out_dir> rules/entry_candidates.dl
+//
+// OUTPUT: EntryCandidate(func, param_idx, reason).
+//   reason ∈ {
+//     "libc_input_caller" — calls a libc input fn (read/fread/recv/...)
+//     "named_main"        — function literally named "main"/"wmain"
+//     "named_libfuzzer"   — LLVMFuzzerTestOneInput-style harness
+//     "named_parser_api"  — well-known parser entry point by name
+//   }
+//
+// A separate LLM-driven step then narrows this to actual EntryTaint rows
+// by reading each candidate's HLIL and deciding whether it is a real
+// attacker-reachable entry vs. an internal helper that is itself called
+// by another candidate (the latter is dropped because taint will
+// propagate from the upstream entry).
+//
+// Intentionally deterministic and small. The whole point is to be a
+// candidate-narrowing pre-pass, not a verdict.
+// =====================================================================
+
+.decl Call(caller: symbol, callee: symbol, addr: number)
+.input Call
+
+.decl FormalParam(func: symbol, var: symbol, idx: number)
+.input FormalParam
+
+// ── Reason 1: Function calls a libc input source ─────────────────────
+// Mirrors the source list from signatures.dl. Kept deliberately narrow:
+// only functions that read attacker-controlled bytes (file/network/env).
+.decl LibcInputCallee(name: symbol)
+LibcInputCallee("read").
+LibcInputCallee("fread").
+LibcInputCallee("fread_unlocked").
+LibcInputCallee("fgets").
+LibcInputCallee("fgets_unlocked").
+LibcInputCallee("gets").
+LibcInputCallee("getline").
+LibcInputCallee("getdelim").
+LibcInputCallee("fgetc").
+LibcInputCallee("getc").
+LibcInputCallee("getc_unlocked").
+LibcInputCallee("fopen").
+LibcInputCallee("open").
+LibcInputCallee("openat").
+LibcInputCallee("recv").
+LibcInputCallee("recvfrom").
+LibcInputCallee("recvmsg").
+LibcInputCallee("getenv").
+LibcInputCallee("scanf").
+LibcInputCallee("fscanf").
+LibcInputCallee("sscanf").
+LibcInputCallee("getopt").
+LibcInputCallee("getopt_long").
+LibcInputCallee("mmap").
+LibcInputCallee("mmap64").
+
+// ── Reason 2: Functions named like a program / fuzz harness entry ───
+.decl NamedMain(name: symbol)
+NamedMain("main").
+NamedMain("wmain").
+NamedMain("WinMain").
+NamedMain("DllMain").
+
+.decl NamedLibFuzzer(name: symbol)
+NamedLibFuzzer("LLVMFuzzerTestOneInput").
+NamedLibFuzzer("LLVMFuzzerInitialize").
+NamedLibFuzzer("AFL_INIT").
+
+// ── Reason 3: Functions named like a known parser entry API ─────────
+// Intentionally a curated list rather than a regex over all
+// `xmlParse*` / `png_*` / `av_*` etc., because those families contain
+// many internal helpers we do *not* want to seed taint at. The list is
+// extended per-target by a sibling `entry_signatures.dl` (future work).
+.decl NamedParserAPI(name: symbol)
+// libxml2 public read/parse entries
+NamedParserAPI("xmlReadFile").
+NamedParserAPI("xmlReadMemory").
+NamedParserAPI("xmlReadFd").
+NamedParserAPI("xmlReadIO").
+NamedParserAPI("xmlReadDoc").
+NamedParserAPI("xmlCtxtReadFile").
+NamedParserAPI("xmlCtxtReadMemory").
+NamedParserAPI("xmlCtxtReadFd").
+NamedParserAPI("xmlCtxtReadIO").
+NamedParserAPI("xmlCtxtReadDoc").
+NamedParserAPI("xmlParseFile").
+NamedParserAPI("xmlParseMemory").
+NamedParserAPI("xmlSAXUserParseFile").
+NamedParserAPI("xmlSAXUserParseMemory").
+NamedParserAPI("xmlSAXParseFile").
+NamedParserAPI("xmlSAXParseMemory").
+NamedParserAPI("xmlReaderForFile").
+NamedParserAPI("xmlReaderForMemory").
+NamedParserAPI("xmlReaderForFd").
+NamedParserAPI("xmlReaderForIO").
+NamedParserAPI("xmlReaderForDoc").
+// libtiff public read entries
+NamedParserAPI("TIFFOpen").
+NamedParserAPI("TIFFFdOpen").
+NamedParserAPI("TIFFClientOpen").
+NamedParserAPI("TIFFReadDirectory").
+NamedParserAPI("TIFFRGBAImageGet").
+// libpng public read entries
+NamedParserAPI("png_read_info").
+NamedParserAPI("png_read_image").
+NamedParserAPI("png_read_png").
+NamedParserAPI("png_init_io").
+// FFmpeg / libav demuxer entries
+NamedParserAPI("av_read_frame").
+NamedParserAPI("avformat_open_input").
+NamedParserAPI("avcodec_send_packet").
+
+// ── Derive EntryCandidate ────────────────────────────────────────────
+.decl EntryCandidate(func: symbol, param_idx: number, reason: symbol)
+.output EntryCandidate
+
+// Reason 1 candidates: every parameter of a function that calls a libc
+// input source. The agent narrows to which param actually carries
+// attacker data.
+EntryCandidate(f, idx, "libc_input_caller") :-
+    Call(f, callee, _),
+    LibcInputCallee(callee),
+    FormalParam(f, _, idx).
+
+// Reason 2: main / WinMain / DllMain / fuzzer harness — all params
+// flagged for the agent to classify (argc vs argv etc.)
+EntryCandidate(f, idx, "named_main") :-
+    NamedMain(f),
+    FormalParam(f, _, idx).
+
+EntryCandidate(f, idx, "named_libfuzzer") :-
+    NamedLibFuzzer(f),
+    FormalParam(f, _, idx).
+
+// Reason 3: known parser API by name
+EntryCandidate(f, idx, "named_parser_api") :-
+    NamedParserAPI(f),
+    FormalParam(f, _, idx).
+
+// ── Function-level summary for the agent (one row per candidate fn) ─
+// Easier for the agent to consume than per-(func, param) rows.
+.decl EntryCandidateFunc(func: symbol)
+.output EntryCandidateFunc
+
+EntryCandidateFunc(f) :- EntryCandidate(f, _, _).
