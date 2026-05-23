@@ -21,9 +21,9 @@
             op: Sym, bound: Sym, bound_type: Sym)
 .input Guard
 
-.decl BnFlow(func: Sym, src_var: Sym, src_ver: Ver,
+.decl BnFlowRelevant(func: Sym, src_var: Sym, src_ver: Ver,
              dst_var: Sym, dst_ver: Ver)
-.input BnFlow
+.input BnFlowRelevant
 
 .decl TaintedVar(func: Sym, var: Sym, ver: Ver, origin: Sym, ctx: Addr)
 .input TaintedVar
@@ -58,7 +58,7 @@ BnTaintedLoopBound(f, ga, lv, lver, lv, lver, op, origin, "loop_var_tainted") :-
 BnTaintedLoopBound(f, ga, lv, lver, lv, lver, op, origin, "loop_var_tainted_flow") :-
     Guard(f, ga, lv, lver, op, _, _),
     (op = "slt" ; op = "sle" ; op = "ult" ; op = "ule" ; op = "ne"),
-    BnFlow(f, tv, tver, lv, lver),
+    BnFlowRelevant(f, tv, tver, lv, lver),
     TaintedVar(f, tv, tver, origin, _).
 
 .output BnTaintedLoopBound

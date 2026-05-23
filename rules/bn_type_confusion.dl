@@ -1,0 +1,101 @@
+// BinCodeQL — Type confusion (PtrIntTruncation subset)
+//
+// Ports ONE sub-rule from NeuroLog rules/type_confusion.dl:
+//   • PtrIntTruncation — pointer cast to a sub-pointer-width integer,
+//     then cast back to a pointer. Silently truncates the high bits
+//     on LP64 / ILP64.
+//
+// The other NeuroLog sub-rules require Cast.src_type / Cast.dst_type
+// declared-type strings that don't exist in binary fact extraction (we
+// have widths only). They are *deliberately* not ported. Per the
+// 2026-05-21 audit:
+//   • IncompatibleStructCast  — needs type-name strings    → skipped
+//   • VoidPtrLaundering        — needs "void *" string      → skipped
+//   • FuncPtrCastMismatch      — needs function-type names  → skipped (BN types only)
+//   • AllocCastChannel         — needs declared dst type    → skipped
+//
+// PtrIntTruncation is the type-confusion bug with the cleanest
+// width-only signature, and the most direct mapping to MLIL-SSA:
+//
+//   1. Cast(ptr_var → int_var, src_width >= 8B, dst_width < 8B)
+//   2. The same int_var (or BnFlow descendant) is later cast back to
+//      a pointer-width destination.
+//
+// Real bug class on 32-vs-64 ports: pointer stashed in a 32-bit field
+// then read back. We additionally tag a coarse subkind so triage can
+// separate the 64→32→64 case from 64→16→64 etc.
+//
+// Consumes: Cast, BnFlow.
+
+// ── Types ────────────────────────────────────────────────────────────
+.type Addr <: unsigned
+.type Sym  <: symbol
+.type Ver  <: unsigned
+
+// ── Input facts ──────────────────────────────────────────────────────
+.decl Cast(func: Sym, addr: Addr, dst: Sym, dst_ver: Ver,
+           src: Sym, src_ver: Ver, kind: Sym,
+           src_width: unsigned, dst_width: unsigned)
+.input Cast
+
+.decl BnFlowRelevant(func: Sym, src_var: Sym, src_ver: Ver,
+             dst_var: Sym, dst_ver: Ver)
+.input BnFlowRelevant
+
+// ── Sub-relations ────────────────────────────────────────────────────
+
+// Step 1 — pointer-wide source narrowed to a smaller integer. We treat
+// any src_width >= 8 as "pointer-like" on LP64; this avoids depending
+// on cast.kind = "truncate" vs "reinterpret" which extractor naming
+// varies on. A canonical PtrInt cast lowers from 8 bytes to {1,2,4}.
+.decl BnPtrToNarrow(func: Sym, addr: Addr,
+                    int_var: Sym, int_ver: Ver,
+                    ptr_var: Sym, ptr_ver: Ver,
+                    src_width: unsigned, dst_width: unsigned)
+
+BnPtrToNarrow(f, a, iv, iver, pv, pver, sw, dw) :-
+    Cast(f, a, iv, iver, pv, pver, _, sw, dw),
+    sw >= 8,
+    dw > 0,
+    dw < sw,
+    dw < 8.
+
+.output BnPtrToNarrow
+
+// Step 2 — narrow integer widened back to pointer width (LP64 = 8). We
+// permit BnFlow between the narrow result and the cast's source so that
+// programs that pass the truncated value through copy assignments or
+// phis (`if (cond) tmp = narrow; else tmp = ...`) still match.
+.decl BnNarrowToPtr(func: Sym, addr: Addr,
+                    out_var: Sym, out_ver: Ver,
+                    src_var: Sym, src_ver: Ver,
+                    src_width: unsigned, dst_width: unsigned)
+
+BnNarrowToPtr(f, a, ov, over, sv, sver, sw, dw) :-
+    Cast(f, a, ov, over, sv, sver, _, sw, dw),
+    sw > 0,
+    sw < 8,
+    dw >= 8.
+
+.output BnNarrowToPtr
+
+// ── Main output ──────────────────────────────────────────────────────
+// PtrIntTruncation — both casts present, narrow value flows from the
+// first to the second, second cast strictly after the first in linear
+// address order to enforce temporal direction.
+
+.decl BnPtrIntTruncation(func: Sym, in_addr: Addr, out_addr: Addr,
+                         ptr_var: Sym, int_var: Sym,
+                         ptr_width: unsigned, int_width: unsigned,
+                         subkind: Sym)
+.output BnPtrIntTruncation
+
+BnPtrIntTruncation(f, a1, a2, pv, iv, pw, iw, subkind) :-
+    BnPtrToNarrow(f, a1, iv, iver, pv, _, pw, iw),
+    BnFlowRelevant(f, iv, iver, mv, mver),
+    BnNarrowToPtr(f, a2, _, _, mv, mver, _, _),
+    a2 > a1,
+    ( iw = 4, subkind = "ptr64_int32_ptr64"
+    ; iw = 2, subkind = "ptr64_int16_ptr64"
+    ; iw = 1, subkind = "ptr64_int8_ptr64"
+    ; iw != 1, iw != 2, iw != 4, subkind = "ptr_int_ptr_other" ).

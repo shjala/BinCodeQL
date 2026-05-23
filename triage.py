@@ -37,6 +37,14 @@ from google.genai import types  # noqa: E402
 import triage_agent  # noqa: E402
 
 load_dotenv(override=True)
+# Optional eval-time profile overrides — applied AFTER the default .env
+# so callers (e.g. magma_eval/eval_one.py) can swap models for an eval
+# without disturbing the global .env.
+import os as _os  # noqa: E402
+
+_profile = _os.getenv("BINCODEQL_PROFILE_ENV")
+if _profile:
+    load_dotenv(_profile, override=True)
 
 DEFAULT_CONCURRENCY = 8
 APP_NAME = "bincodeql_triage"
@@ -58,6 +66,11 @@ def parse_args() -> argparse.Namespace:
                    help="Restrict to candidates of this severity.")
     p.add_argument("--source", choices=["BnFinding", "TaintedSink"],
                    help="Restrict to candidates from this Datalog relation.")
+    p.add_argument("--candidate-id",
+                   help="Triage only the candidate with this exact id. "
+                        "Use one-candidate-per-subprocess driving from "
+                        "eval_one.py to avoid asyncio/httpx state leaks "
+                        "across long batches.")
     return p.parse_args()
 
 
@@ -145,6 +158,8 @@ async def _main_async() -> int:
         candidates = [c for c in candidates if c.get("severity") == args.severity]
     if args.source:
         candidates = [c for c in candidates if c.get("source") == args.source]
+    if args.candidate_id:
+        candidates = [c for c in candidates if c.get("id") == args.candidate_id]
 
     if not args.force:
         verdicts_dir = scan_out / "verdicts"

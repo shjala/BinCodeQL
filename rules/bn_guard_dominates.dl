@@ -72,9 +72,9 @@
 .input FormalParam
 
 // BnFlow is pre-computed by bn_flow.dl (shared across Bn* rules).
-.decl BnFlow(func: Sym, src_var: Sym, src_ver: Ver,
+.decl BnFlowRelevant(func: Sym, src_var: Sym, src_ver: Ver,
              dst_var: Sym, dst_ver: Ver)
-.input BnFlow
+.input BnFlowRelevant
 
 .decl TaintedSink(caller: Sym, callee: Sym, call_addr: Addr,
                   arg_idx: Idx, tainted_var: Sym, risk: Sym,
@@ -188,7 +188,7 @@ BnGuardSubsumedSink(caller, callee, ca, tv, op, bound, ga) :-
 BnGuardSubsumedSink(caller, callee, ca, gv, op, bound, ga) :-
     TaintedSink(caller, callee, ca, _, tv, _, _),
     TaintedVar(caller, tv, tver, _, _),
-    BnFlow(caller, gv, gver, tv, tver),
+    BnFlowRelevant(caller, gv, gver, tv, tver),
     Guard(caller, ga, gv, gver, op, bound, _),
     BlockHead(caller, ga, gb),
     BlockHead(caller, ca, cb),

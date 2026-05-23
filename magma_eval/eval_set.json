@@ -1,0 +1,930 @@
+{
+  "variant": "vuln",
+  "targets": {
+    "libtiff": {
+      "target": "libtiff",
+      "variant": "vuln",
+      "binary": "/home/sanjay/san-home/research/tii/tii24/tmp/farah-magma/libtiff-vuln/tiffcp",
+      "total_functions_in_binary": 1043,
+      "buggy_present": [
+        {
+          "name": "horAcc8",
+          "start": 4576424,
+          "size": 773,
+          "blocks": 22,
+          "bug_ids": [
+            "TIF001"
+          ],
+          "role": "buggy"
+        },
+        {
+          "name": "horAcc16",
+          "start": 4577294,
+          "size": 436,
+          "blocks": 13,
+          "bug_ids": [
+            "TIF001"
+          ],
+          "role": "buggy"
+        },
+        {
+          "name": "horAcc32",
+          "start": 4577829,
+          "size": 463,
+          "blocks": 13,
+          "bug_ids": [
+            "TIF001"
+          ],
+          "role": "buggy"
+        },
+        {
+          "name": "fpAcc",
+          "start": 4578292,
+          "size": 592,
+          "blocks": 21,
+          "bug_ids": [
+            "TIF001"
+          ],
+          "role": "buggy"
+        },
+        {
+          "name": "PredictorDecodeTile",
+          "start": 4579154,
+          "size": 372,
+          "blocks": 16,
+          "bug_ids": [
+            "TIF001"
+          ],
+          "role": "buggy"
+        },
+        {
+          "name": "horDiff8",
+          "start": 4579526,
+          "size": 890,
+          "blocks": 20,
+          "bug_ids": [
+            "TIF001"
+          ],
+          "role": "buggy"
+        },
+        {
+          "name": "horDiff16",
+          "start": 4580416,
+          "size": 459,
+          "blocks": 13,
+          "bug_ids": [
+            "TIF001"
+          ],
+          "role": "buggy"
+        },
+        {
+          "name": "horDiff32",
+          "start": 4580988,
+          "size": 487,
+          "blocks": 13,
+          "bug_ids": [
+            "TIF001"
+          ],
+          "role": "buggy"
+        },
+        {
+          "name": "fpDiff",
+          "start": 4581590,
+          "size": 609,
+          "blocks": 22,
+          "bug_ids": [
+            "TIF001"
+          ],
+          "role": "buggy"
+        },
+        {
+          "name": "PredictorEncodeTile",
+          "start": 4582469,
+          "size": 476,
+          "blocks": 14,
+          "bug_ids": [
+            "TIF001"
+          ],
+          "role": "buggy"
+        },
+        {
+          "name": "PixarLogDecode",
+          "start": 4561701,
+          "size": 1491,
+          "blocks": 49,
+          "bug_ids": [
+            "TIF002"
+          ],
+          "role": "buggy"
+        },
+        {
+          "name": "TIFFReadEncodedStripGetStripSize",
+          "start": 4382261,
+          "size": 330,
+          "blocks": 14,
+          "bug_ids": [
+            "TIF003"
+          ],
+          "role": "buggy"
+        },
+        {
+          "name": "OJPEGDecode",
+          "start": 4526618,
+          "size": 135,
+          "blocks": 7,
+          "bug_ids": [
+            "TIF004"
+          ],
+          "role": "buggy"
+        },
+        {
+          "name": "LogLuvClose",
+          "start": 4502802,
+          "size": 147,
+          "blocks": 6,
+          "bug_ids": [
+            "TIF005"
+          ],
+          "role": "buggy"
+        },
+        {
+          "name": "PixarLogClose",
+          "start": 4572117,
+          "size": 113,
+          "blocks": 3,
+          "bug_ids": [
+            "TIF006"
+          ],
+          "role": "buggy"
+        },
+        {
+          "name": "ChopUpSingleUncompressedStrip",
+          "start": 4334551,
+          "size": 388,
+          "blocks": 21,
+          "bug_ids": [
+            "TIF007",
+            "TIF014"
+          ],
+          "role": "buggy"
+        },
+        {
+          "name": "NeXTDecode",
+          "start": 4519516,
+          "size": 934,
+          "blocks": 46,
+          "bug_ids": [
+            "TIF008"
+          ],
+          "role": "buggy"
+        },
+        {
+          "name": "TIFFWriteDirectoryTagTransferfunction",
+          "start": 4357437,
+          "size": 552,
+          "blocks": 20,
+          "bug_ids": [
+            "TIF009"
+          ],
+          "role": "buggy"
+        },
+        {
+          "name": "LZWDecodeCompat",
+          "start": 4513040,
+          "size": 2542,
+          "blocks": 68,
+          "bug_ids": [
+            "TIF010"
+          ],
+          "role": "buggy"
+        },
+        {
+          "name": "setExtraSamples",
+          "start": 4246808,
+          "size": 410,
+          "blocks": 20,
+          "bug_ids": [
+            "TIF012"
+          ],
+          "role": "buggy"
+        },
+        {
+          "name": "_TIFFVSetField",
+          "start": 4247455,
+          "size": 12067,
+          "blocks": 452,
+          "bug_ids": [
+            "TIF012"
+          ],
+          "role": "buggy"
+        },
+        {
+          "name": "JBIGDecode",
+          "start": 4484414,
+          "size": 708,
+          "blocks": 12,
+          "bug_ids": [
+            "TIF013"
+          ],
+          "role": "buggy"
+        }
+      ],
+      "buggy_missing": [
+        {
+          "function": "TIFFPrintDirectory",
+          "bug_ids": [
+            "TIF011"
+          ]
+        }
+      ],
+      "negatives": [
+        {
+          "name": "TIFFWriteEncodedStrip",
+          "start": 4402130,
+          "size": 1191,
+          "blocks": 46,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "PixarLogSetupEncode",
+          "start": 4563192,
+          "size": 548,
+          "blocks": 20,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "LogL16fromY",
+          "start": 4492605,
+          "size": 274,
+          "blocks": 10,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "cpSeparate2SeparateByRow",
+          "start": 4230064,
+          "size": 362,
+          "blocks": 16,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "TIFFDefaultDirectory",
+          "start": 4270320,
+          "size": 543,
+          "blocks": 10,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "OJPEGReadByte",
+          "start": 4543939,
+          "size": 196,
+          "blocks": 7,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "LogLuvVSetField",
+          "start": 4503136,
+          "size": 650,
+          "blocks": 31,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "TIFFUnsetField",
+          "start": 4259996,
+          "size": 476,
+          "blocks": 17,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "ZSTDDecode",
+          "start": 4592223,
+          "size": 552,
+          "blocks": 16,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "LogLuvDecode24",
+          "start": 4486898,
+          "size": 551,
+          "blocks": 17,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "TIFFReadRawStrip",
+          "start": 4384522,
+          "size": 347,
+          "blocks": 14,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "PixarLogCleanup",
+          "start": 4572230,
+          "size": 483,
+          "blocks": 21,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "JPEGCleanup",
+          "start": 4430005,
+          "size": 254,
+          "blocks": 7,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "TIFFInitLZMA",
+          "start": 4508003,
+          "size": 1067,
+          "blocks": 13,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "processG3Options",
+          "start": 4221723,
+          "size": 263,
+          "blocks": 12,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "TIFFUnlinkDirectory",
+          "start": 4273432,
+          "size": 978,
+          "blocks": 32,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "LogLuvEncodeTile",
+          "start": 4492170,
+          "size": 195,
+          "blocks": 9,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "DoubleToRational",
+          "start": 4362908,
+          "size": 875,
+          "blocks": 35,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "PixarLogMakeTables",
+          "start": 4558609,
+          "size": 1685,
+          "blocks": 51,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "OJPEGWriteHeaderInfo",
+          "start": 4531983,
+          "size": 2315,
+          "blocks": 43,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "readSeparateStripsIntoBuffer",
+          "start": 4232718,
+          "size": 407,
+          "blocks": 19,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "TIFFWriteDirectoryTagCheckedRationalArray",
+          "start": 4360817,
+          "size": 328,
+          "blocks": 9,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "JPEGDecodeRaw",
+          "start": 4423196,
+          "size": 936,
+          "blocks": 36,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "TIFFReadDirEntryLongArray",
+          "start": 4292908,
+          "size": 1424,
+          "blocks": 71,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "JPEGDecode",
+          "start": 4422624,
+          "size": 494,
+          "blocks": 17,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "LogLuvEncodeStrip",
+          "start": 4491975,
+          "size": 195,
+          "blocks": 9,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "LZWPostEncode",
+          "start": 4517824,
+          "size": 794,
+          "blocks": 20,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "OJPEGReadHeaderInfoSecStreamDqt",
+          "start": 4536062,
+          "size": 666,
+          "blocks": 24,
+          "bug_ids": [],
+          "role": "negative"
+        }
+      ],
+      "size_band": {
+        "lo": 194,
+        "hi": 4096
+      }
+    },
+    "libxml2": {
+      "target": "libxml2",
+      "variant": "vuln",
+      "binary": "/home/sanjay/san-home/research/tii/tii24/tmp/farah-magma/libxml2-vuln/xmllint",
+      "total_functions_in_binary": 3084,
+      "buggy_present": [
+        {
+          "name": "xmlSnprintfElementContent",
+          "start": 4679654,
+          "size": 1345,
+          "blocks": 67,
+          "bug_ids": [
+            "XML001",
+            "XML006"
+          ],
+          "role": "buggy"
+        },
+        {
+          "name": "xmlValidateOneNamespace",
+          "start": 4705303,
+          "size": 2673,
+          "blocks": 98,
+          "bug_ids": [
+            "XML002"
+          ],
+          "role": "buggy"
+        },
+        {
+          "name": "xmlParsePEReference",
+          "start": 4470160,
+          "size": 1279,
+          "blocks": 54,
+          "bug_ids": [
+            "XML003"
+          ],
+          "role": "buggy"
+        },
+        {
+          "name": "xz_decomp",
+          "start": 5630283,
+          "size": 1105,
+          "blocks": 46,
+          "bug_ids": [
+            "XML004"
+          ],
+          "role": "buggy"
+        },
+        {
+          "name": "xmlMallocLoc",
+          "start": 4642143,
+          "size": 407,
+          "blocks": 12,
+          "bug_ids": [
+            "XML005"
+          ],
+          "role": "buggy"
+        },
+        {
+          "name": "xmlMallocAtomicLoc",
+          "start": 4642550,
+          "size": 407,
+          "blocks": 12,
+          "bug_ids": [
+            "XML005"
+          ],
+          "role": "buggy"
+        },
+        {
+          "name": "xmlReallocLoc",
+          "start": 4643002,
+          "size": 552,
+          "blocks": 17,
+          "bug_ids": [
+            "XML005"
+          ],
+          "role": "buggy"
+        },
+        {
+          "name": "xmlMemStrdupLoc",
+          "start": 4643979,
+          "size": 404,
+          "blocks": 12,
+          "bug_ids": [
+            "XML005"
+          ],
+          "role": "buggy"
+        },
+        {
+          "name": "htmlParseTryOrFinish",
+          "start": 4768242,
+          "size": 7878,
+          "blocks": 333,
+          "bug_ids": [
+            "XML007"
+          ],
+          "role": "buggy"
+        },
+        {
+          "name": "xmlParseComment",
+          "start": 4435355,
+          "size": 2134,
+          "blocks": 91,
+          "bug_ids": [
+            "XML008"
+          ],
+          "role": "buggy"
+        },
+        {
+          "name": "xmlParseEncodingDecl",
+          "start": 4497371,
+          "size": 1208,
+          "blocks": 47,
+          "bug_ids": [
+            "XML009"
+          ],
+          "role": "buggy"
+        },
+        {
+          "name": "xmlStringLenDecodeEntities",
+          "start": 4403923,
+          "size": 3123,
+          "blocks": 110,
+          "bug_ids": [
+            "XML010"
+          ],
+          "role": "buggy"
+        },
+        {
+          "name": "xmlStrncat",
+          "start": 5055785,
+          "size": 231,
+          "blocks": 11,
+          "bug_ids": [
+            "XML011"
+          ],
+          "role": "buggy"
+        },
+        {
+          "name": "xmlStrncatNew",
+          "start": 5056016,
+          "size": 274,
+          "blocks": 11,
+          "bug_ids": [
+            "XML011"
+          ],
+          "role": "buggy"
+        },
+        {
+          "name": "xmlParseNCNameComplex",
+          "start": 4414307,
+          "size": 960,
+          "blocks": 40,
+          "bug_ids": [
+            "XML012"
+          ],
+          "role": "buggy"
+        },
+        {
+          "name": "htmlParseSystemLiteral",
+          "start": 4741650,
+          "size": 522,
+          "blocks": 17,
+          "bug_ids": [
+            "XML013"
+          ],
+          "role": "buggy"
+        },
+        {
+          "name": "htmlParsePubidLiteral",
+          "start": 4742172,
+          "size": 474,
+          "blocks": 14,
+          "bug_ids": [
+            "XML013"
+          ],
+          "role": "buggy"
+        },
+        {
+          "name": "htmlParseName",
+          "start": 4737066,
+          "size": 452,
+          "blocks": 26,
+          "bug_ids": [
+            "XML014"
+          ],
+          "role": "buggy"
+        },
+        {
+          "name": "htmlParseNameComplex",
+          "start": 4737518,
+          "size": 1231,
+          "blocks": 86,
+          "bug_ids": [
+            "XML015"
+          ],
+          "role": "buggy"
+        },
+        {
+          "name": "xmlFAParseCharRange",
+          "start": 5112505,
+          "size": 1038,
+          "blocks": 44,
+          "bug_ids": [
+            "XML016"
+          ],
+          "role": "buggy"
+        },
+        {
+          "name": "xmlParseInternalSubset",
+          "start": 4474024,
+          "size": 450,
+          "blocks": 20,
+          "bug_ids": [
+            "XML017"
+          ],
+          "role": "buggy"
+        }
+      ],
+      "buggy_missing": [],
+      "negatives": [
+        {
+          "name": "xmlNewDocNode",
+          "start": 4561771,
+          "size": 297,
+          "blocks": 13,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "xmlSaveCtxtInit",
+          "start": 5592012,
+          "size": 334,
+          "blocks": 15,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "xmlSchemaPCheckParticleCorrect_2",
+          "start": 5169451,
+          "size": 225,
+          "blocks": 10,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "xmlParse3986PathRootless",
+          "start": 4652769,
+          "size": 368,
+          "blocks": 17,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "xmlRelaxNGNewStates",
+          "start": 5442254,
+          "size": 319,
+          "blocks": 12,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "xmlSchemaValidateElem",
+          "start": 5320737,
+          "size": 1425,
+          "blocks": 64,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "xmlSchemaPIllegalAttrErr",
+          "start": 5138811,
+          "size": 252,
+          "blocks": 7,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "xmlParse3986Query",
+          "start": 4647190,
+          "size": 1014,
+          "blocks": 65,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "xmlRelaxNGParseExceptNameClass",
+          "start": 5478764,
+          "size": 528,
+          "blocks": 28,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "xmlSAXParseDTD",
+          "start": 4525171,
+          "size": 1049,
+          "blocks": 49,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "xmlSchemaParseIncludeOrRedefine",
+          "start": 5208064,
+          "size": 2188,
+          "blocks": 95,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "xmlSchemaFormatFacetEnumSet",
+          "start": 5128324,
+          "size": 531,
+          "blocks": 26,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "xmlCtxtDumpEntityCallback",
+          "start": 4804424,
+          "size": 679,
+          "blocks": 24,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "htmlNodeStatus",
+          "start": 4779172,
+          "size": 234,
+          "blocks": 13,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "xmlPointerListAddSize",
+          "start": 4832129,
+          "size": 372,
+          "blocks": 13,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "xmlXPathCacheNewBoolean",
+          "start": 4844333,
+          "size": 293,
+          "blocks": 10,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "fatalErrorDebug",
+          "start": 4296827,
+          "size": 276,
+          "blocks": 8,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "xmlDOMWrapAdoptBranch",
+          "start": 4606846,
+          "size": 2929,
+          "blocks": 172,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "xmlXPathEvalExpr",
+          "start": 4947023,
+          "size": 352,
+          "blocks": 18,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "xmlPushInput",
+          "start": 4400862,
+          "size": 412,
+          "blocks": 21,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "xmlSetProp",
+          "start": 4593596,
+          "size": 260,
+          "blocks": 13,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "xmlAutomataNewNegTrans",
+          "start": 5119211,
+          "size": 730,
+          "blocks": 20,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "xmlSchemaVCheckCVCSimpleType",
+          "start": 5303528,
+          "size": 2934,
+          "blocks": 162,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "xmlXPtrErr",
+          "start": 4949899,
+          "size": 514,
+          "blocks": 9,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "xmlTextReaderName",
+          "start": 5420436,
+          "size": 573,
+          "blocks": 27,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "xmlC14NCheckForRelativeNamespaces",
+          "start": 5048510,
+          "size": 251,
+          "blocks": 15,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "xmlXPathNodeSetRemove",
+          "start": 4854745,
+          "size": 256,
+          "blocks": 12,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "xmlXPathEqualValuesCommon",
+          "start": 4872256,
+          "size": 1627,
+          "blocks": 78,
+          "bug_ids": [],
+          "role": "negative"
+        },
+        {
+          "name": "xmlSAX2TextNode",
+          "start": 5558273,
+          "size": 929,
+          "blocks": 47,
+          "bug_ids": [],
+          "role": "negative"
+        }
+      ],
+      "size_band": {
+        "lo": 225,
+        "hi": 4096
+      }
+    }
+  }
+}

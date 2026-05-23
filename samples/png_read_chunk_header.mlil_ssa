@@ -1,0 +1,46 @@
+0041a20c        rbp#1 = png_ptr#0
+0041a214        rax#1 = [fsbase#0 + 0x28].q @ mem#0
+0041a21d        var_20#1 = rax#1
+0041a222        rax_1#2 = 0
+0041a227        png_ptr#0->io_state = 0x21 @ mem#0 -> mem#1
+0041a231        rsi#1 = &buf
+0041a234        mem#2 = 0x413a60(png_ptr#0, rsi#1, 8) @ mem#1
+0041a239        rsi_1#2 = &buf
+0041a23c        rdi#1 = rbp#1
+0041a23f        result#3, mem#3 = 0x407050(rdi#1, rsi_1#2) @ mem#2
+0041a244        rbx#1 = buf[4].d @ mem#3
+0041a248        rdi_1#2 = rbp#1
+0041a24b        r12#1 = result#3
+0041a24e        temp0#1 = _bswap(rbx#1)
+0041a24e        rbx_1#2 = temp0#1
+0041a250        rbp#1->chunk_name = rbx_1#2 @ mem#3 -> mem#4
+0041a256        mem#5 = 0x407760(rdi_1#2) @ mem#4
+0041a25b        rsi_2#3 = &buf[4]
+0041a265        rdi_2#3 = rbp#1
+0041a268        mem#6 = 0x407780(rdi_2#3, rsi_2#3, 4) @ mem#5
+0041a271        if (buf[0] @ mem#6 s< 0) then 21 @ 0x41a2cc else 24 @ 0x41a273
+0041a2cc        rdi_3#4 = rbp#1
+0041a2cf        mem#7 = 0x406970(rdi_3#4, "bad header (invalid length)") @ mem#6
+0041a2cf        noreturn
+0041a273        rcx#1 = rbx_1#2
+0041a275        rbx_2#3 = rbx_1#2 & 0xc0c0e0c0
+0041a280        rcx_1#2 = rcx#1 & 0xdfdfffdf
+0041a286        rbx_3#4 = rbx_2#3 ^ 0x40404040
+0041a28c        rdx#1 = rcx_1#2 - 0x41414141
+0041a292        rax_2#4 = 0x5a5a5a5a - rcx_1#2
+0041a294        rdx_1#2 = rdx#1 | rbx_3#4
+0041a296        rax_3#5 = rax_2#4 | rdx_1#2
+0041a29d        if ((rax_3#5 & 0xe0e0e0e0) != 0) then 33 @ 0x41a2e0 else 36 @ 0x41a29f
+0041a2e0        rdi_4#5 = rbp#1
+0041a2e3        mem#8 = 0x406970(rdi_4#5, "bad header (invalid type)") @ mem#6
+0041a2e3        noreturn
+0041a29f        rbp#1->io_state = 0x41 @ mem#6 -> mem#9
+0041a2a9        rax_4#6 = var_20#1
+0041a2ae        temp0_1#2 = rax_4#6
+0041a2ae        temp1#1 = [fsbase#0 + 0x28].q @ mem#9
+0041a2ae        rax_5#7 = rax_4#6 - [fsbase#0 + 0x28].q @ mem#9
+0041a2b7        if (temp0_1#2 != temp1#1) then 42 @ 0x41a2d4 else 44 @ 0x41a2bd
+0041a2d4        mem#10 = 0x406b90() @ mem#9
+0041a2d4        noreturn
+0041a2bd        rax_6#8 = r12#1
+0041a2c4        return rax_6#8

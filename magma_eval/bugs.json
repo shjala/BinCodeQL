@@ -1,0 +1,560 @@
+{
+  "bugs": [
+    {
+      "bug_id": "TIF001",
+      "target": "libtiff",
+      "file": "libtiff/tif_predict.c",
+      "function": "horAcc8",
+      "hunk_old_start": 282,
+      "hunk_old_count": 12
+    },
+    {
+      "bug_id": "TIF001",
+      "target": "libtiff",
+      "file": "libtiff/tif_predict.c",
+      "function": "horAcc16",
+      "hunk_old_start": 351,
+      "hunk_old_count": 12
+    },
+    {
+      "bug_id": "TIF001",
+      "target": "libtiff",
+      "file": "libtiff/tif_predict.c",
+      "function": "horAcc32",
+      "hunk_old_start": 386,
+      "hunk_old_count": 12
+    },
+    {
+      "bug_id": "TIF001",
+      "target": "libtiff",
+      "file": "libtiff/tif_predict.c",
+      "function": "fpAcc",
+      "hunk_old_start": 416,
+      "hunk_old_count": 12
+    },
+    {
+      "bug_id": "TIF001",
+      "target": "libtiff",
+      "file": "libtiff/tif_predict.c",
+      "function": "PredictorDecodeTile",
+      "hunk_old_start": 486,
+      "hunk_old_count": 12
+    },
+    {
+      "bug_id": "TIF001",
+      "target": "libtiff",
+      "file": "libtiff/tif_predict.c",
+      "function": "horDiff8",
+      "hunk_old_start": 512,
+      "hunk_old_count": 12
+    },
+    {
+      "bug_id": "TIF001",
+      "target": "libtiff",
+      "file": "libtiff/tif_predict.c",
+      "function": "horDiff16",
+      "hunk_old_start": 567,
+      "hunk_old_count": 12
+    },
+    {
+      "bug_id": "TIF001",
+      "target": "libtiff",
+      "file": "libtiff/tif_predict.c",
+      "function": "horDiff32",
+      "hunk_old_start": 607,
+      "hunk_old_count": 12
+    },
+    {
+      "bug_id": "TIF001",
+      "target": "libtiff",
+      "file": "libtiff/tif_predict.c",
+      "function": "fpDiff",
+      "hunk_old_start": 652,
+      "hunk_old_count": 12
+    },
+    {
+      "bug_id": "TIF001",
+      "target": "libtiff",
+      "file": "libtiff/tif_predict.c",
+      "function": "PredictorEncodeTile",
+      "hunk_old_start": 737,
+      "hunk_old_count": 6
+    },
+    {
+      "bug_id": "TIF002",
+      "target": "libtiff",
+      "file": "libtiff/tif_pixarlog.c",
+      "function": "PixarLogDecode",
+      "hunk_old_start": 804,
+      "hunk_old_count": 12
+    },
+    {
+      "bug_id": "TIF003",
+      "target": "libtiff",
+      "file": "libtiff/tif_read.c",
+      "function": "TIFFReadEncodedStripGetStripSize",
+      "hunk_old_start": 492,
+      "hunk_old_count": 7
+    },
+    {
+      "bug_id": "TIF004",
+      "target": "libtiff",
+      "file": "libtiff/tif_ojpeg.c",
+      "function": "OJPEGDecode",
+      "hunk_old_start": 789,
+      "hunk_old_count": 15
+    },
+    {
+      "bug_id": "TIF005",
+      "target": "libtiff",
+      "file": "libtiff/tif_luv.c",
+      "function": "LogLuvClose",
+      "hunk_old_start": 1596,
+      "hunk_old_count": 6
+    },
+    {
+      "bug_id": "TIF006",
+      "target": "libtiff",
+      "file": "libtiff/tif_pixarlog.c",
+      "function": "PixarLogClose",
+      "hunk_old_start": 1278,
+      "hunk_old_count": 6
+    },
+    {
+      "bug_id": "TIF007",
+      "target": "libtiff",
+      "file": "libtiff/tif_dirread.c",
+      "function": "ChopUpSingleUncompressedStrip",
+      "hunk_old_start": 5848,
+      "hunk_old_count": 9
+    },
+    {
+      "bug_id": "TIF008",
+      "target": "libtiff",
+      "file": "libtiff/tif_next.c",
+      "function": "NeXTDecode",
+      "hunk_old_start": 122,
+      "hunk_old_count": 15
+    },
+    {
+      "bug_id": "TIF009",
+      "target": "libtiff",
+      "file": "libtiff/tif_dirwrite.c",
+      "function": "TIFFWriteDirectoryTagTransferfunction",
+      "hunk_old_start": 2026,
+      "hunk_old_count": 14
+    },
+    {
+      "bug_id": "TIF010",
+      "target": "libtiff",
+      "file": "libtiff/tif_lzw.c",
+      "function": "LZWDecodeCompat",
+      "hunk_old_start": 764,
+      "hunk_old_count": 9
+    },
+    {
+      "bug_id": "TIF011",
+      "target": "libtiff",
+      "file": "libtiff/tif_print.c",
+      "function": "TIFFPrintDirectory",
+      "hunk_old_start": 544,
+      "hunk_old_count": 9
+    },
+    {
+      "bug_id": "TIF012",
+      "target": "libtiff",
+      "file": "libtiff/tif_dir.c",
+      "function": "setExtraSamples",
+      "hunk_old_start": 128,
+      "hunk_old_count": 6
+    },
+    {
+      "bug_id": "TIF012",
+      "target": "libtiff",
+      "file": "libtiff/tif_dir.c",
+      "function": "_TIFFVSetField",
+      "hunk_old_start": 301,
+      "hunk_old_count": 6
+    },
+    {
+      "bug_id": "TIF013",
+      "target": "libtiff",
+      "file": "libtiff/tif_jbig.c",
+      "function": "JBIGDecode",
+      "hunk_old_start": 106,
+      "hunk_old_count": 12
+    },
+    {
+      "bug_id": "TIF014",
+      "target": "libtiff",
+      "file": "libtiff/tif_dirread.c",
+      "function": "ChopUpSingleUncompressedStrip",
+      "hunk_old_start": 5861,
+      "hunk_old_count": 6
+    },
+    {
+      "bug_id": "XML001",
+      "target": "libxml2",
+      "file": "valid.c",
+      "function": "xmlSnprintfElementContent",
+      "hunk_old_start": 1275,
+      "hunk_old_count": 10
+    },
+    {
+      "bug_id": "XML002",
+      "target": "libxml2",
+      "file": "valid.c",
+      "function": "xmlValidateOneNamespace",
+      "hunk_old_start": 4657,
+      "hunk_old_count": 15
+    },
+    {
+      "bug_id": "XML003",
+      "target": "libxml2",
+      "file": "parser.c",
+      "function": "xmlParsePEReference",
+      "hunk_old_start": 7922,
+      "hunk_old_count": 7
+    },
+    {
+      "bug_id": "XML004",
+      "target": "libxml2",
+      "file": "xzlib.c",
+      "function": "xz_decomp",
+      "hunk_old_start": 587,
+      "hunk_old_count": 11
+    },
+    {
+      "bug_id": "XML005",
+      "target": "libxml2",
+      "file": "xmlmemory.c",
+      "function": "xmlMallocLoc",
+      "hunk_old_start": 172,
+      "hunk_old_count": 12
+    },
+    {
+      "bug_id": "XML005",
+      "target": "libxml2",
+      "file": "xmlmemory.c",
+      "function": "xmlMallocAtomicLoc",
+      "hunk_old_start": 248,
+      "hunk_old_count": 12
+    },
+    {
+      "bug_id": "XML005",
+      "target": "libxml2",
+      "file": "xmlmemory.c",
+      "function": "xmlReallocLoc",
+      "hunk_old_start": 359,
+      "hunk_old_count": 12
+    },
+    {
+      "bug_id": "XML005",
+      "target": "libxml2",
+      "file": "xmlmemory.c",
+      "function": "xmlMemStrdupLoc",
+      "hunk_old_start": 513,
+      "hunk_old_count": 12
+    },
+    {
+      "bug_id": "XML006",
+      "target": "libxml2",
+      "file": "valid.c",
+      "function": "xmlSnprintfElementContent",
+      "hunk_old_start": 1324,
+      "hunk_old_count": 7
+    },
+    {
+      "bug_id": "XML007",
+      "target": "libxml2",
+      "file": "HTMLparser.c",
+      "function": "htmlParseTryOrFinish",
+      "hunk_old_start": 5392,
+      "hunk_old_count": 6
+    },
+    {
+      "bug_id": "XML008",
+      "target": "libxml2",
+      "file": "parser.c",
+      "function": "xmlParseComment",
+      "hunk_old_start": 4978,
+      "hunk_old_count": 10
+    },
+    {
+      "bug_id": "XML009",
+      "target": "libxml2",
+      "file": "parser.c",
+      "function": "xmlParseEncodingDecl",
+      "hunk_old_start": 10330,
+      "hunk_old_count": 11
+    },
+    {
+      "bug_id": "XML010",
+      "target": "libxml2",
+      "file": "parser.c",
+      "function": "xmlStringLenDecodeEntities",
+      "hunk_old_start": 2716,
+      "hunk_old_count": 10
+    },
+    {
+      "bug_id": "XML011",
+      "target": "libxml2",
+      "file": "xmlstring.c",
+      "function": "xmlStrncat",
+      "hunk_old_start": 457,
+      "hunk_old_count": 13
+    },
+    {
+      "bug_id": "XML011",
+      "target": "libxml2",
+      "file": "xmlstring.c",
+      "function": "xmlStrncatNew",
+      "hunk_old_start": 497,
+      "hunk_old_count": 13
+    },
+    {
+      "bug_id": "XML012",
+      "target": "libxml2",
+      "file": "parser.c",
+      "function": "xmlParseNCNameComplex",
+      "hunk_old_start": 3401,
+      "hunk_old_count": 7
+    },
+    {
+      "bug_id": "XML013",
+      "target": "libxml2",
+      "file": "HTMLparser.c",
+      "function": "htmlParseSystemLiteral",
+      "hunk_old_start": 2830,
+      "hunk_old_count": 9
+    },
+    {
+      "bug_id": "XML013",
+      "target": "libxml2",
+      "file": "HTMLparser.c",
+      "function": "htmlParsePubidLiteral",
+      "hunk_old_start": 2885,
+      "hunk_old_count": 9
+    },
+    {
+      "bug_id": "XML014",
+      "target": "libxml2",
+      "file": "HTMLparser.c",
+      "function": "htmlParseName",
+      "hunk_old_start": 2473,
+      "hunk_old_count": 8
+    },
+    {
+      "bug_id": "XML015",
+      "target": "libxml2",
+      "file": "HTMLparser.c",
+      "function": "htmlParseNameComplex",
+      "hunk_old_start": 2526,
+      "hunk_old_count": 6
+    },
+    {
+      "bug_id": "XML016",
+      "target": "libxml2",
+      "file": "xmlregexp.c",
+      "function": "xmlFAParseCharRange",
+      "hunk_old_start": 5065,
+      "hunk_old_count": 11
+    },
+    {
+      "bug_id": "XML017",
+      "target": "libxml2",
+      "file": "parser.c",
+      "function": "xmlParseInternalSubset",
+      "hunk_old_start": 8311,
+      "hunk_old_count": 10
+    }
+  ],
+  "by_target": {
+    "libtiff": {
+      "bug_count": 14,
+      "distinct_funcs": [
+        {
+          "file": "libtiff/tif_dir.c",
+          "function": "_TIFFVSetField"
+        },
+        {
+          "file": "libtiff/tif_dir.c",
+          "function": "setExtraSamples"
+        },
+        {
+          "file": "libtiff/tif_dirread.c",
+          "function": "ChopUpSingleUncompressedStrip"
+        },
+        {
+          "file": "libtiff/tif_dirwrite.c",
+          "function": "TIFFWriteDirectoryTagTransferfunction"
+        },
+        {
+          "file": "libtiff/tif_jbig.c",
+          "function": "JBIGDecode"
+        },
+        {
+          "file": "libtiff/tif_luv.c",
+          "function": "LogLuvClose"
+        },
+        {
+          "file": "libtiff/tif_lzw.c",
+          "function": "LZWDecodeCompat"
+        },
+        {
+          "file": "libtiff/tif_next.c",
+          "function": "NeXTDecode"
+        },
+        {
+          "file": "libtiff/tif_ojpeg.c",
+          "function": "OJPEGDecode"
+        },
+        {
+          "file": "libtiff/tif_pixarlog.c",
+          "function": "PixarLogClose"
+        },
+        {
+          "file": "libtiff/tif_pixarlog.c",
+          "function": "PixarLogDecode"
+        },
+        {
+          "file": "libtiff/tif_predict.c",
+          "function": "PredictorDecodeTile"
+        },
+        {
+          "file": "libtiff/tif_predict.c",
+          "function": "PredictorEncodeTile"
+        },
+        {
+          "file": "libtiff/tif_predict.c",
+          "function": "fpAcc"
+        },
+        {
+          "file": "libtiff/tif_predict.c",
+          "function": "fpDiff"
+        },
+        {
+          "file": "libtiff/tif_predict.c",
+          "function": "horAcc16"
+        },
+        {
+          "file": "libtiff/tif_predict.c",
+          "function": "horAcc32"
+        },
+        {
+          "file": "libtiff/tif_predict.c",
+          "function": "horAcc8"
+        },
+        {
+          "file": "libtiff/tif_predict.c",
+          "function": "horDiff16"
+        },
+        {
+          "file": "libtiff/tif_predict.c",
+          "function": "horDiff32"
+        },
+        {
+          "file": "libtiff/tif_predict.c",
+          "function": "horDiff8"
+        },
+        {
+          "file": "libtiff/tif_print.c",
+          "function": "TIFFPrintDirectory"
+        },
+        {
+          "file": "libtiff/tif_read.c",
+          "function": "TIFFReadEncodedStripGetStripSize"
+        }
+      ]
+    },
+    "libxml2": {
+      "bug_count": 17,
+      "distinct_funcs": [
+        {
+          "file": "HTMLparser.c",
+          "function": "htmlParseName"
+        },
+        {
+          "file": "HTMLparser.c",
+          "function": "htmlParseNameComplex"
+        },
+        {
+          "file": "HTMLparser.c",
+          "function": "htmlParsePubidLiteral"
+        },
+        {
+          "file": "HTMLparser.c",
+          "function": "htmlParseSystemLiteral"
+        },
+        {
+          "file": "HTMLparser.c",
+          "function": "htmlParseTryOrFinish"
+        },
+        {
+          "file": "parser.c",
+          "function": "xmlParseComment"
+        },
+        {
+          "file": "parser.c",
+          "function": "xmlParseEncodingDecl"
+        },
+        {
+          "file": "parser.c",
+          "function": "xmlParseInternalSubset"
+        },
+        {
+          "file": "parser.c",
+          "function": "xmlParseNCNameComplex"
+        },
+        {
+          "file": "parser.c",
+          "function": "xmlParsePEReference"
+        },
+        {
+          "file": "parser.c",
+          "function": "xmlStringLenDecodeEntities"
+        },
+        {
+          "file": "valid.c",
+          "function": "xmlSnprintfElementContent"
+        },
+        {
+          "file": "valid.c",
+          "function": "xmlValidateOneNamespace"
+        },
+        {
+          "file": "xmlmemory.c",
+          "function": "xmlMallocAtomicLoc"
+        },
+        {
+          "file": "xmlmemory.c",
+          "function": "xmlMallocLoc"
+        },
+        {
+          "file": "xmlmemory.c",
+          "function": "xmlMemStrdupLoc"
+        },
+        {
+          "file": "xmlmemory.c",
+          "function": "xmlReallocLoc"
+        },
+        {
+          "file": "xmlregexp.c",
+          "function": "xmlFAParseCharRange"
+        },
+        {
+          "file": "xmlstring.c",
+          "function": "xmlStrncat"
+        },
+        {
+          "file": "xmlstring.c",
+          "function": "xmlStrncatNew"
+        },
+        {
+          "file": "xzlib.c",
+          "function": "xz_decomp"
+        }
+      ]
+    }
+  }
+}

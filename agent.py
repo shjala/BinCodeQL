@@ -1067,17 +1067,23 @@ def tool_run_bn_extra_rules(
 
     Additive to existing outputs — does NOT clear non-Bn* CSVs.
     Pass order:
-       1. bn_flow.dl             — shared Flow transitive closure
-       2. bn_signed_infer.dl     — signedness heuristic
-       3. bn_counter_oob.dl      — unbounded-counter / counter-as-index
-       4. bn_alloc_copy.dl       — alloc/copy size-mismatch
-       5. bn_unguarded_sink.dl   — TaintedSink \\ GuardedSink
-       6. bn_loop_bound.dl       — tainted loop bound (BOIL refinement)
-       7. bn_unguarded_cast.dl   — narrowing/sign-extend cast without guard
-       8. bn_arith_overflow.dl   — narrow signed overflow + sink coupling
-       9. bn_width_mismatch.dl   — wide value stored into narrow slot
-      10. bn_sentinel_init.dl    — sentinel-initialized buffer + counter
-      11. bn_findings.dl         — unified BnFinding summary
+       1.  bn_flow.dl                — shared Flow transitive closure
+       2.  bn_signed_infer.dl        — signedness heuristic
+       3.  bn_counter_oob.dl         — unbounded-counter / counter-as-index
+       4.  bn_alloc_copy.dl          — alloc/copy size-mismatch
+       5.  bn_unguarded_sink.dl      — TaintedSink \\ GuardedSink
+       6.  bn_loop_bound.dl          — tainted loop bound (BOIL refinement)
+       7.  bn_unguarded_cast.dl      — narrowing/sign-extend cast without guard
+       8.  bn_arith_overflow.dl      — narrow signed overflow + sink coupling
+       9.  bn_width_mismatch.dl      — wide value stored into narrow slot
+      10.  bn_sentinel_init.dl       — sentinel-initialized buffer + counter
+      11.  bn_null_deref.dl          — null deref of allocator result
+      12.  bn_allocator_mismatch.dl  — alloc-family ↔ free-family mismatch
+      13.  bn_unbounded_sink_audit.dl — sink-first guard-presence audit
+      14.  bn_joint_buffer_bound.dl  — joint offset+size bound (CVE-2023-38545 class)
+      15.  bn_type_confusion.dl      — pointer↔int truncation round-trip
+      16.  bn_guard_dominates.dl     — CFG-dominance refinement
+      17.  bn_findings.dl            — unified BnFinding summary
 
     Staging between passes copies derived CSVs back to facts/ so downstream
     rules can consume them via .input.
@@ -1277,6 +1283,10 @@ Three operating rules follow from this:
 | BnSentinelInit | func, addr, buf, sentinel_val | `memset(buf, K, …)` with K ∈ {-1, 0xFF, 0xFFFF, 255, 65535} |
 | BnSentinelBuf | func, buf, sentinel_val | Lifted sentinel buffer through PointsTo / CallAddrArg |
 | BnSentinelCollisionRisk | func, init_addr, use_addr, buf, cmp_var, cmp_ver, sentinel_val, origin | Sentinel buffer compared against unbounded (possibly tainted) counter |
+| BnAllocatorMismatch | func, alloc_addr, alloc_callee, alloc_family, alloc_var, free_addr, free_callee, free_family | Pointer allocated by family X freed by family Y (requires user-supplied AllocFamily/FreeFamily) |
+| BnUnboundedSinkCall / BnUnboundedSinkParamCall | caller, callee, call_addr, size_var, size_ver, risk | Sink-first audit: dangerous call with no in-function bound on the size arg |
+| BnJointBufferBoundUnsafe | func, addr, sink, dst_var, off_var, sz_var, const_bound, cap_var, cap_term | strcpy/memcpy at base+off where off and sz are bounded separately but no joint guard exists (CVE-2023-38545 class) |
+| BnPtrIntTruncation | func, in_addr, out_addr, ptr_var, int_var, ptr_width, int_width, subkind | Pointer cast to sub-pointer-width int and cast back — silent high-bit truncation |
 | BnFinding | func, addr, severity, category, var, detail | Unified aggregation — primary output for reporting |
 
 Severity levels in `BnFinding`: `high` (exploitable shape — tainted counter-as-index, alloc-copy mismatch, unguarded tainted sink, tainted overflow-at-sink), `medium` (structural — tainted loop bound, unguarded cast, unbounded counter without taint).
@@ -1354,22 +1364,33 @@ PointsTo and TaintedVar are auto-staged for the next pipeline — no
 manual copy needed.
 
 **8. Run the Bn* extra-rule pipeline** — `tool_run_bn_extra_rules()`.
-Eleven passes with automatic inter-pass fact staging:
-  1. bn_flow.dl            — shared transitive-closure Flow (perf)
-  2. bn_signed_infer.dl    — signedness (VarSign ground truth + heuristic)
-  3. bn_counter_oob.dl     — unbounded counter / counter-as-index
-                             (gated on loop-carried phi self-reference
-                             to suppress straight-line FPs)
-  4. bn_alloc_copy.dl      — alloc/copy size mismatch (NEW bug class)
-  5. bn_unguarded_sink.dl  — TaintedSink \\ GuardedSink
-  6. bn_loop_bound.dl      — tainted loop bound (BOIL refinement)
-  7. bn_unguarded_cast.dl  — trunc/sx without CFG-reaching guard
-  8. bn_arith_overflow.dl  — narrow signed arith overflow + sink coupling
-  9. bn_width_mismatch.dl  — wide value stored into narrower slot
-                             (32-bit counter → 16-bit table element)
-  10. bn_sentinel_init.dl  — memset(buf, K, …) sentinel meets unbounded
-                             counter (H.264 slice_table class)
-  11. bn_findings.dl       — unified BnFinding aggregation
+Passes are auto-ordered with inter-pass fact staging:
+   1.  bn_flow.dl                — shared transitive-closure Flow (perf)
+   2.  bn_signed_infer.dl        — signedness (VarSign ground truth + heuristic)
+   3.  bn_counter_oob.dl         — unbounded counter / counter-as-index
+                                   (gated on loop-carried phi self-reference
+                                   to suppress straight-line FPs)
+   4.  bn_alloc_copy.dl          — alloc/copy size mismatch
+   5.  bn_unguarded_sink.dl      — TaintedSink \\ GuardedSink
+   6.  bn_loop_bound.dl          — tainted loop bound (BOIL refinement)
+   7.  bn_unguarded_cast.dl      — trunc/sx without CFG-reaching guard
+   8.  bn_arith_overflow.dl      — narrow signed arith overflow + sink coupling
+   9.  bn_width_mismatch.dl      — wide value stored into narrower slot
+                                   (32-bit counter → 16-bit table element)
+  10.  bn_sentinel_init.dl       — memset(buf, K, …) sentinel meets unbounded
+                                   counter (H.264 slice_table class)
+  11.  bn_null_deref.dl          — null deref of allocator result
+  12.  bn_allocator_mismatch.dl  — alloc-family X then free-family Y
+                                   (requires user-supplied AllocFamily.facts +
+                                   FreeFamily.facts; empty files = no rows)
+  13.  bn_unbounded_sink_audit.dl — sink-first guard-presence audit (triage
+                                   floor; complement to source-first taint)
+  14.  bn_joint_buffer_bound.dl  — offset+size with no joint guard
+                                   (CVE-2023-38545 class)
+  15.  bn_type_confusion.dl      — pointer↔int truncation round-trip
+                                   (LP64 silent high-bit loss)
+  16.  bn_guard_dominates.dl     — CFG-dominance refinement of guards
+  17.  bn_findings.dl            — unified BnFinding aggregation
 
 **9. Optionally run additional rule files** for orthogonal coverage:
   - `patterns.dl`, `patterns_mem_interproc.dl` (UAF, double-free, etc.)

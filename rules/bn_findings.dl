@@ -90,6 +90,32 @@
                   var: Sym, deref_kind: Sym)
 .input BnNullDeref
 
+// Tier-1 NeuroLog imports (2026-05-21).
+.decl BnAllocatorMismatch(func: Sym,
+                          alloc_addr: Addr, alloc_callee: Sym,
+                          alloc_family: Sym, alloc_var: Sym,
+                          free_addr: Addr, free_callee: Sym,
+                          free_family: Sym)
+.input BnAllocatorMismatch
+
+.decl BnUnboundedSinkCall(caller: Sym, callee: Sym, call_addr: Addr,
+                          size_var: Sym, size_ver: Ver, risk: Sym)
+.input BnUnboundedSinkCall
+
+.decl BnUnboundedSinkParamCall(caller: Sym, callee: Sym, call_addr: Addr,
+                               size_var: Sym, size_ver: Ver, risk: Sym)
+.input BnUnboundedSinkParamCall
+
+.decl BnJointBufferBoundSite(func: Sym, addr: Addr, sink: Sym,
+                             dst_var: Sym, off_var: Sym)
+.input BnJointBufferBoundSite
+
+.decl BnPtrIntTruncation(func: Sym, in_addr: Addr, out_addr: Addr,
+                         ptr_var: Sym, int_var: Sym,
+                         ptr_width: unsigned, int_width: unsigned,
+                         subkind: Sym)
+.input BnPtrIntTruncation
+
 // ── Unified finding ──────────────────────────────────────────────────
 // severity: "high" (tainted + exploitable-shape) or "medium" (structural).
 // category: short tag for triage filtering.
@@ -185,6 +211,49 @@ BnFinding(f, da, "medium", cat("null_deref_", kind), v,
           cat("alloc@", to_string(aa))) :-
     BnNullDeref(f, aa, da, v, kind).
 
+// Allocator/free family mismatch (NeuroLog allocator_mismatch.dl).
+// High severity: cross-allocator free is undefined behaviour under
+// custom allocator hooks (curl_global_init_mem) and on Windows DLL
+// boundaries. Surfaced at the free site (where the bug manifests).
+BnFinding(f, fa, "high", "allocator_mismatch", v,
+          cat(ac, cat("(", cat(afam,
+          cat(") then ", cat(fc, cat("(", cat(ffam, ")")))))))) :-
+    BnAllocatorMismatch(f, _, ac, afam, v, fa, fc, ffam).
+
+// Sink-first audit: dangerous call whose size argument has no
+// bound evidence (no in-function guard, no literal). Medium severity
+// — high-recall triage candidate; precision improves via
+// BnFindingDomGuarded refinement below.
+BnFinding(caller, ca, "medium", "unbounded_sink", sv,
+          cat(callee, cat(" risk=", risk))) :-
+    BnUnboundedSinkCall(caller, callee, ca, sv, _, risk),
+    !BnUnboundedSinkParamCall(caller, callee, ca, sv, _, risk).
+
+// Same but size_var is a caller parameter — strictly higher priority
+// since the safety depends on what the caller's caller passed.
+BnFinding(caller, ca, "high", "unbounded_sink_param", sv,
+          cat(callee, cat(" risk=", risk))) :-
+    BnUnboundedSinkParamCall(caller, callee, ca, sv, _, risk).
+
+// Joint offset+size bound (NeuroLog joint_buffer_bound.dl): copy sink
+// at base+off where off and sz are each bounded separately but no joint
+// guard exists. High severity — CVE-2023-38545 class. Consumes the
+// compact projection (one row per copy site) so cross-product
+// expansion doesn't pollute BnFinding; full evidence is in
+// BnJointBufferBoundUnsafe.csv.
+BnFinding(f, a, "high", "joint_buffer_bound_unsafe", ov,
+          cat(sink, cat(" off=", cat(ov, cat(" dst=", dv))))) :-
+    BnJointBufferBoundSite(f, a, sink, dv, ov).
+
+// Pointer-int truncation round-trip (NeuroLog type_confusion.dl,
+// PtrIntTruncation subset). Surfaced at the *second* cast (where the
+// truncated value is widened back to a pointer — the corruption point).
+BnFinding(f, a2, "medium", cat("ptr_int_truncation_", subkind), iv,
+          cat("ptr_w=", cat(to_string(pw),
+          cat(" int_w=", cat(to_string(iw),
+          cat(" first_cast@", to_string(a1))))))) :-
+    BnPtrIntTruncation(f, a1, a2, _, iv, pw, iw, subkind).
+
 .output BnFinding
 
 // ── BnFindingDomGuarded: structural-defect findings whose variable is
@@ -211,9 +280,9 @@ BnFinding(f, da, "medium", cat("null_deref_", kind), v,
                      guard_var: Sym, op: Sym, bound: Sym)
 .input GuardDominates
 
-.decl BnFlow(func: Sym, src_var: Sym, src_ver: Ver,
+.decl BnFlowRelevant(func: Sym, src_var: Sym, src_ver: Ver,
              dst_var: Sym, dst_ver: Ver)
-.input BnFlow
+.input BnFlowRelevant
 
 .decl BnFindingDomGuarded(func: Sym, finding_addr: Addr, category: Sym,
                           var: Sym, guard_addr: Addr, op: Sym, bound: Sym)
@@ -228,7 +297,7 @@ BnFindingDomGuarded(f, fa, ck, v, ga, op, bound) :-
 BnFindingDomGuarded(f, fa, ck, v, ga, op, bound) :-
     BnFinding(f, fa, _, ck, v, _),
     GuardDominates(f, fa, ga, gv, op, bound),
-    BnFlow(f, gv, _, v, _).
+    BnFlowRelevant(f, gv, _, v, _).
 
 // Strictly-tighter unguarded view: BnFinding rows with no dom-guard.
 .decl BnFindingDomUnguarded(func: Sym, addr: Addr, severity: Sym,

@@ -56,8 +56,8 @@
 
 // BnFlow is pre-computed by bn_flow.dl (shared across Bn* rules to avoid
 // re-deriving the transitive closure per file). Identity included.
-.decl BnFlow(func: Sym, src_var: Sym, src_ver: Ver, dst_var: Sym, dst_ver: Ver)
-.input BnFlow
+.decl BnFlowRelevant(func: Sym, src_var: Sym, src_ver: Ver, dst_var: Sym, dst_ver: Ver)
+.input BnFlowRelevant
 
 // ════════════════════════════════════════════════════════════════════
 // FP tuning: loop-carried-variable filter
@@ -135,7 +135,7 @@ BnHasUpperBound(f, v, ver) :-
 BnHasUpperBound(f, v, mver) :-
     Guard(f, _, v, gver, gop, _, _),
     (gop = "slt" ; gop = "sle" ; gop = "ult" ; gop = "ule"),
-    BnFlow(f, v, gver, v, mver).
+    BnFlowRelevant(f, v, gver, v, mver).
 
 // And the reverse direction: the guard may occur AFTER the increment
 // on the CFG (common while-loop shape: body; then check). If v#m flows
@@ -143,7 +143,7 @@ BnHasUpperBound(f, v, mver) :-
 BnHasUpperBound(f, v, mver) :-
     Guard(f, _, v, gver, gop, _, _),
     (gop = "slt" ; gop = "sle" ; gop = "ult" ; gop = "ule"),
-    BnFlow(f, v, mver, v, gver).
+    BnFlowRelevant(f, v, mver, v, gver).
 
 .output BnHasUpperBound
 
@@ -183,7 +183,7 @@ BnUnboundedCounter(f, v, ver, ia) :-
 BnCounterUsedAsIndex(f, v, ver, ia, ua, "mem_read_use") :-
     BnUnboundedCounter(f, v, ver, ia),
     BnLoopIterVar(f, v),
-    BnFlow(f, v, ver, uv, uver),
+    BnFlowRelevant(f, v, ver, uv, uver),
     Use(f, uv, uver, ua),
     MemRead(f, ua, _, _, _).
 
@@ -191,7 +191,7 @@ BnCounterUsedAsIndex(f, v, ver, ia, ua, "mem_read_use") :-
 BnCounterUsedAsIndex(f, v, ver, ia, ua, "mem_write_use") :-
     BnUnboundedCounter(f, v, ver, ia),
     BnLoopIterVar(f, v),
-    BnFlow(f, v, ver, uv, uver),
+    BnFlowRelevant(f, v, ver, uv, uver),
     Use(f, uv, uver, ua),
     MemWrite(f, ua, _, _, _).
 
@@ -199,14 +199,14 @@ BnCounterUsedAsIndex(f, v, ver, ia, ua, "mem_write_use") :-
 BnCounterUsedAsIndex(f, v, ver, ia, ua, "ptr_arith") :-
     BnUnboundedCounter(f, v, ver, ia),
     BnLoopIterVar(f, v),
-    BnFlow(f, v, ver, uv, uver),
+    BnFlowRelevant(f, v, ver, uv, uver),
     ArithOp(f, ua, _, _, "add", uv, uver, _).
 
 // sink_arg: counter appears at the argument slot of a dangerous sink
 BnCounterUsedAsIndex(f, v, ver, ia, ua, "sink_arg") :-
     BnUnboundedCounter(f, v, ver, ia),
     BnLoopIterVar(f, v),
-    BnFlow(f, v, ver, uv, uver),
+    BnFlowRelevant(f, v, ver, uv, uver),
     Call(f, callee, ua),
     ActualArg(ua, idx, _, uv, uver),
     BnDangerousSink(callee, idx, _).
@@ -231,7 +231,7 @@ BnTaintedUnboundedCounter(f, v, ver, ia, origin) :-
 BnTaintedUnboundedCounter(f, v, ver, ia, origin) :-
     BnUnboundedCounter(f, v, ver, ia),
     BnLoopIterVar(f, v),
-    BnFlow(f, tv, tver, v, ver),
+    BnFlowRelevant(f, tv, tver, v, ver),
     TaintedVar(f, tv, tver, origin, _).
 
 .output BnTaintedUnboundedCounter

@@ -107,6 +107,17 @@
 .decl TaintSourceFunc(name: Sym, category: Sym)
 .input TaintSourceFunc
 
+// Allocator / deallocator family annotations (user-supplied, project-specific).
+// Group calls that share a heap into a single family symbol so a malloc-family
+// mismatch with a free-family can be detected (see bn_allocator_mismatch.dl).
+// Example rows: AllocFamily("xmlMalloc", "libxml2"), FreeFamily("free", "libc").
+// Ported from NeuroLog allocator_mismatch.dl 2026-05-21.
+.decl AllocFamily(callee: Sym, family: Sym)
+.input AllocFamily
+
+.decl FreeFamily(callee: Sym, family: Sym)
+.input FreeFamily
+
 // ── Signature relations ─────────────────────────────────────────────
 .decl TaintTransfer(func: Sym, out_arg: Sym, in_arg: Sym)
 .input TaintTransfer

@@ -35,6 +35,12 @@ import pipeline  # noqa: E402
 from bn_utils import extract_facts_batch  # noqa: E402
 
 load_dotenv(override=True)
+# Optional eval-time profile overrides — applied AFTER the default .env
+# so callers (e.g. magma_eval/eval_one.py) can swap models for an eval
+# without disturbing the global .env.
+_profile = os.getenv("BINCODEQL_PROFILE_ENV")
+if _profile:
+    load_dotenv(_profile, override=True)
 
 DEFAULT_RULES_DIR = PROJECT_DIR / "rules"
 
@@ -51,14 +57,22 @@ def parse_args() -> argparse.Namespace:
                      help="Extract facts for all functions in the binary.")
     sel.add_argument("-f", "--functions",
                      help="Comma-separated list of function names to extract.")
+    sel.add_argument("--targets-file", type=Path,
+                     help="Path to a text file with one function name per "
+                          "line (e.g. a shard produced by "
+                          "scripts/shard_targets.py SHARD). Equivalent to "
+                          "-f with the file's contents joined by commas.")
     p.add_argument("-o", "--output-dir",
                    default=str(PROJECT_DIR / "scan_out"),
                    help="Directory for facts + souffle outputs + candidates.json. "
                         "Will be created if missing.")
-    p.add_argument("--taint-timeout", type=int, default=300,
-                   help="Per-pass timeout for alias.dl / interproc.dl (default 300s).")
-    p.add_argument("--bn-timeout", type=int, default=300,
-                   help="Per-pass timeout for each bn_*.dl rule (default 300s).")
+    p.add_argument("--taint-timeout", type=int, default=1800,
+                   help="Per-pass timeout for alias.dl / interproc.dl "
+                        "(default 1800s = 30min). interproc.dl's full taint "
+                        "closure on libxml2/ffmpeg-scale binaries can take "
+                        "several minutes once signatures are staged.")
+    p.add_argument("--bn-timeout", type=int, default=600,
+                   help="Per-pass timeout for each bn_*.dl rule (default 600s).")
     p.add_argument("--skip-extract", action="store_true",
                    help="Skip extraction (assume facts/ in --output-dir is current).")
     return p.parse_args()
@@ -145,7 +159,14 @@ def main() -> int:
         if args.all:
             ex = extract_facts_batch(args.binary, None, str(facts_dir), extract_all=True)
         else:
-            funcs = [f.strip() for f in args.functions.split(",") if f.strip()]
+            if args.targets_file:
+                funcs = [
+                    line.strip()
+                    for line in args.targets_file.read_text().splitlines()
+                    if line.strip() and not line.startswith("#")
+                ]
+            else:
+                funcs = [f.strip() for f in args.functions.split(",") if f.strip()]
             ex = extract_facts_batch(args.binary, funcs, str(facts_dir), extract_all=False)
         if "error" in ex:
             print(f"[1/4] Extraction FAILED: {ex['error']}", file=sys.stderr)
@@ -153,6 +174,24 @@ def main() -> int:
         print(f"[1/4] Extraction OK ({time.time()-t0:.1f}s) — "
               f"{ex.get('functions_processed', '?')} fns, "
               f"{ex.get('total_facts', '?')} facts")
+
+    # ── Phase 1.5: stage library signatures as facts ─────────────────────
+    # interproc.dl/taint.dl `.input TaintTransfer / BufferWriteSource /
+    # TaintKill` — these come from running signatures.dl, NOT from
+    # extraction. Without this step taint can't seed from libc sources
+    # (read/mmap/getopt/...) and TaintedVar stays empty.
+    t0 = time.time()
+    sg = pipeline.stage_signature_facts(
+        facts_dir, souffle_out, DEFAULT_RULES_DIR,
+    )
+    if "error" in sg:
+        print(f"[1.5/4] Signatures ERROR ({time.time()-t0:.1f}s): {sg['error']}",
+              file=sys.stderr)
+    else:
+        print(f"[1.5/4] Signatures OK ({time.time()-t0:.1f}s) — "
+              f"TaintTransfer={sg.get('TaintTransfer', 0)} "
+              f"BufferWriteSource={sg.get('BufferWriteSource', 0)} "
+              f"TaintKill={sg.get('TaintKill', 0)}")
 
     # ── Phase 2: taint pipeline (alias.dl → interproc.dl) ─────────────────
     t0 = time.time()

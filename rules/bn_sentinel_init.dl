@@ -43,9 +43,9 @@
                   size_var: Sym, size_ver: Ver, alloc_func: Sym)
 .input BnAllocSite
 
-.decl BnFlow(func: Sym, src_var: Sym, src_ver: Ver,
+.decl BnFlowRelevant(func: Sym, src_var: Sym, src_ver: Ver,
              dst_var: Sym, dst_ver: Ver)
-.input BnFlow
+.input BnFlowRelevant
 
 .decl BnUnboundedCounter(func: Sym, var: Sym, ver: Ver, incr_addr: Addr)
 .input BnUnboundedCounter
@@ -156,7 +156,7 @@ BnSentinelBuf(f, buf, bver, sval, ia) :-
 
 BnSentinelBuf(f, dst, dver, sval, ia) :-
     BnSentinelBuf(f, src, sver, sval, ia),
-    BnFlow(f, src, sver, dst, dver).
+    BnFlowRelevant(f, src, sver, dst, dver).
 
 .output BnSentinelBuf
 
@@ -173,7 +173,7 @@ BnSentinelBuf(f, dst, dver, sval, ia) :-
 BnSentinelNarrowAlloc(f, ia, aa, buf, bver, sval, ew) :-
     BnSentinelInit(f, ia, buf, bver, sval),
     BnAllocSite(f, aa, abuf, abver, _, _, _),
-    BnFlow(f, abuf, abver, buf, bver),
+    BnFlowRelevant(f, abuf, abver, buf, bver),
     AllocSite(aa, _, _, _, ew),
     ew > 0,
     ew <= 2.

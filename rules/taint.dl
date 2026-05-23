@@ -46,10 +46,27 @@
 TaintSourceFunc("png_read_data").    // reads external file data
 TaintSourceFunc("read").
 TaintSourceFunc("recv").
+TaintSourceFunc("recvfrom").
+TaintSourceFunc("recvmsg").
 TaintSourceFunc("fread").
+TaintSourceFunc("fread_unlocked").
 TaintSourceFunc("fgets").
+TaintSourceFunc("fgets_unlocked").
+TaintSourceFunc("gets").
+TaintSourceFunc("getline").
+TaintSourceFunc("getdelim").
 TaintSourceFunc("getenv").
 TaintSourceFunc("scanf").
+TaintSourceFunc("fscanf").
+TaintSourceFunc("sscanf").
+TaintSourceFunc("vfscanf").
+TaintSourceFunc("mmap").             // file mapped into memory (return is tainted)
+TaintSourceFunc("mmap64").
+// argv parsing — getopt mutates optarg (a global pointer) which is
+// then read by callers. Treat callers' use of the return as tainted.
+TaintSourceFunc("getopt").
+TaintSourceFunc("getopt_long").
+TaintSourceFunc("getopt_long_only").
 
 // Dangerous sink functions and which argument is sensitive
 // (arg_idx, risk_type)

@@ -42,9 +42,9 @@
                 size_const: Sym, elem_width: unsigned)
 .input AllocSite
 
-.decl BnFlow(func: Sym, src_var: Sym, src_ver: Ver,
+.decl BnFlowRelevant(func: Sym, src_var: Sym, src_ver: Ver,
              dst_var: Sym, dst_ver: Ver)
-.input BnFlow
+.input BnFlowRelevant
 
 // BnAllocSite is produced by bn_alloc_copy.dl; staged into facts/ by the
 // pipeline before this rule runs.
@@ -103,7 +103,7 @@ BnWidthMismatchStore(f, sa, vv, vver, ss, vw, aa, ew) :-
     AllocSite(aa, _, _, _, ew),
     ew > 0,
     ew < vw,
-    BnFlow(f, buf, bver, dst, dver),
+    BnFlowRelevant(f, buf, bver, dst, dver),
     Use(f, dst, dver, sa).
 
 .output BnWidthMismatchStore

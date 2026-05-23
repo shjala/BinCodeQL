@@ -1,0 +1,234 @@
+// BinCodeQL — Sink-first guard-presence audit
+//
+// Ports NeuroLog rules/unbounded_sink_audit.dl (2026-05-21 import audit).
+//
+// The default Bn* tier-1 pipeline is source-first: tainted entry input
+// → propagation → does it reach a sink? That's tight when sources are
+// clean and the call graph is shallow. For codebases where sources go
+// through 10+ wrapper layers and the slice has rule-mesh gaps, source-
+// first finds *some* but not all of the dangerous calls.
+//
+// This pass complements it with the auditor's reverse approach:
+//   **enumerate every dangerous call, then ask — is the size argument
+//   bounded?** If not, flag the call regardless of taint provenance.
+//
+// This is the "symbolic floor" for the triage layer: high-recall,
+// somewhat-low-precision candidate generation. The LLM closes the
+// precision gap by deciding which calls have wrapper-level bounds.
+//
+// MLIL-SSA adaptation:
+//   • NeuroLog's ActualArgVarRef (compound-expression decomposition)
+//     is unnecessary in SSA — ActualArg already gives us (var, ver) of
+//     each atom argument.
+//   • NeuroLog's SizeIsLiteral / SizeIsSizeof string checks are
+//     subsumed by our CallArgConst (binary-native fact, more precise
+//     than substring matching).
+//   • NeuroLog's CFGReach(ga, ca) is omitted here: we use coarse
+//     address-order (`ga <= ca`) as a structural "before" filter,
+//     and let bn_findings.dl's BnFindingDomGuarded apply the precise
+//     CFG-dominance refinement post-hoc. Same pattern allocator_mismatch
+//     uses for its fallback branch.
+//   • NeuroLog's ConstTableLookup is omitted (source-only signal).
+//   • The dangerous-sink table is HARDCODED inside this rule
+//     (BnDangerousSink) so the rule is self-contained — matches the
+//     convention bn_counter_oob.dl uses. We don't depend on a
+//     user-supplied DangerousSink.facts.
+//
+// Consumes: Call, ActualArg, CallArgConst, Guard, FormalParam.
+
+// ── Types ────────────────────────────────────────────────────────────
+.type Addr <: unsigned
+.type Sym  <: symbol
+.type Ver  <: unsigned
+.type Idx  <: unsigned
+
+// ── Input facts ──────────────────────────────────────────────────────
+.decl Call(caller: Sym, callee: Sym, addr: Addr)
+.input Call
+
+.decl ActualArg(call_addr: Addr, arg_idx: Idx, param: Sym, var: Sym, ver: Ver)
+.input ActualArg
+
+.decl CallArgConst(call_addr: Addr, arg_idx: Idx, value: Sym)
+.input CallArgConst
+
+.decl Guard(func: Sym, addr: Addr, var: Sym, ver: Ver,
+            op: Sym, bound: Sym, bound_type: Sym)
+.input Guard
+
+.decl FormalParam(func: Sym, var: Sym, idx: Idx)
+.input FormalParam
+
+// BnFlow is pre-computed by bn_flow.dl (staged before this rule).
+// Used by BnUnboundedSinkParamCall to detect size args that *derive
+// from* a caller's formal param (via copy/cast/arith), not just
+// vars whose SSA name happens to match a FormalParam row.
+.decl BnFlowRelevant(func: Sym, src_var: Sym, src_ver: Ver,
+             dst_var: Sym, dst_ver: Ver)
+.input BnFlowRelevant
+
+// ── Dangerous sinks (size-sensitive arg positions) ───────────────────
+// Self-contained sink registry — same convention as bn_counter_oob.dl's
+// BnDangerousSink. Add project-specific sinks here when widening
+// coverage; risk strings flow through to BnFinding.detail for triage.
+.decl BnDangerousSink(func: Sym, arg_idx: Idx, risk: Sym)
+BnDangerousSink("malloc",  0, "allocation_size").
+BnDangerousSink("calloc",  0, "allocation_size").
+BnDangerousSink("calloc",  1, "allocation_size").
+BnDangerousSink("realloc", 1, "allocation_size").
+BnDangerousSink("reallocarray", 1, "allocation_size").
+BnDangerousSink("reallocarray", 2, "allocation_size").
+BnDangerousSink("alloca",  0, "allocation_size").
+BnDangerousSink("memcpy",  2, "buffer_overflow").
+BnDangerousSink("memmove", 2, "buffer_overflow").
+BnDangerousSink("memset",  2, "buffer_overflow").
+BnDangerousSink("memccpy", 3, "buffer_overflow").
+BnDangerousSink("strncpy", 2, "buffer_overflow").
+BnDangerousSink("strncat", 2, "buffer_overflow").
+BnDangerousSink("snprintf",  1, "buffer_overflow").
+BnDangerousSink("vsnprintf", 1, "buffer_overflow").
+BnDangerousSink("read",    2, "buffer_overflow").
+BnDangerousSink("recv",    2, "buffer_overflow").
+BnDangerousSink("recvfrom",2, "buffer_overflow").
+BnDangerousSink("pread",   2, "buffer_overflow").
+BnDangerousSink("fread",   1, "buffer_overflow").
+BnDangerousSink("fread",   2, "buffer_overflow").
+BnDangerousSink("__memcpy_chk",  2, "buffer_overflow").
+BnDangerousSink("__memmove_chk", 2, "buffer_overflow").
+BnDangerousSink("__memset_chk",  2, "buffer_overflow").
+BnDangerousSink("__strncpy_chk", 2, "buffer_overflow").
+BnDangerousSink("__snprintf_chk",1, "buffer_overflow").
+BnDangerousSink("__builtin_memcpy",  2, "buffer_overflow").
+BnDangerousSink("__builtin_memmove", 2, "buffer_overflow").
+BnDangerousSink("__builtin_memset",  2, "buffer_overflow").
+// libxml2
+BnDangerousSink("xmlMalloc",       0, "allocation_size").
+BnDangerousSink("xmlMallocAtomic", 0, "allocation_size").
+BnDangerousSink("xmlRealloc",      1, "allocation_size").
+BnDangerousSink("xmlStrncat",      2, "buffer_overflow").
+BnDangerousSink("xmlStrncpy",      2, "buffer_overflow").
+BnDangerousSink("xmlMemcpy",       2, "buffer_overflow").
+BnDangerousSink("xmlMemmove",      2, "buffer_overflow").
+// FFmpeg / libav
+BnDangerousSink("av_malloc",  0, "allocation_size").
+BnDangerousSink("av_mallocz", 0, "allocation_size").
+BnDangerousSink("av_calloc",  0, "allocation_size").
+BnDangerousSink("av_calloc",  1, "allocation_size").
+BnDangerousSink("av_realloc", 1, "allocation_size").
+
+// ── Size-argument index table ────────────────────────────────────────
+// Which arg_idx is the *count/size* argument for each known sink. We
+// list these explicitly because DangerousSink marks both dst and size
+// args as "buffer_overflow" without distinguishing them.
+.decl BnSizeArgIndex(callee: Sym, idx: Idx)
+BnSizeArgIndex("memcpy",        2).
+BnSizeArgIndex("memmove",       2).
+BnSizeArgIndex("memset",        2).
+BnSizeArgIndex("memccpy",       3).
+BnSizeArgIndex("strncpy",       2).
+BnSizeArgIndex("strncat",       2).
+BnSizeArgIndex("snprintf",      1).
+BnSizeArgIndex("vsnprintf",     1).
+BnSizeArgIndex("malloc",        0).
+BnSizeArgIndex("calloc",        0).
+BnSizeArgIndex("calloc",        1).
+BnSizeArgIndex("realloc",       1).
+BnSizeArgIndex("reallocarray",  1).
+BnSizeArgIndex("reallocarray",  2).
+BnSizeArgIndex("read",          2).
+BnSizeArgIndex("recv",          2).
+BnSizeArgIndex("recvfrom",      2).
+BnSizeArgIndex("pread",         2).
+BnSizeArgIndex("fread",         1).
+BnSizeArgIndex("fread",         2).
+BnSizeArgIndex("__memcpy_chk",  2).
+BnSizeArgIndex("__memmove_chk", 2).
+BnSizeArgIndex("__memset_chk",  2).
+BnSizeArgIndex("__strncpy_chk", 2).
+BnSizeArgIndex("__snprintf_chk",1).
+// Compiler-builtins emitted by BN when libc functions are inlined.
+BnSizeArgIndex("__builtin_memcpy",  2).
+BnSizeArgIndex("__builtin_memmove", 2).
+BnSizeArgIndex("__builtin_memset",  2).
+// libxml2 copy wrappers
+BnSizeArgIndex("xmlStrncat",   2).
+BnSizeArgIndex("xmlStrncpy",   2).
+BnSizeArgIndex("xmlMemcpy",    2).
+BnSizeArgIndex("xmlMemmove",   2).
+BnSizeArgIndex("xmlMalloc",    0).
+BnSizeArgIndex("xmlMallocAtomic", 0).
+BnSizeArgIndex("xmlRealloc",   1).
+// FFmpeg / libav
+BnSizeArgIndex("av_malloc",    0).
+BnSizeArgIndex("av_mallocz",   0).
+BnSizeArgIndex("av_calloc",    0).
+BnSizeArgIndex("av_calloc",    1).
+BnSizeArgIndex("av_realloc",   1).
+
+// ── Bound-evidence predicates ────────────────────────────────────────
+
+// (1) The size argument is a literal constant (covers both raw integers
+//     and `sizeof(T)` since sizeof is resolved at compile time and
+//     reaches the binary as a literal).
+.decl BnSizeIsLiteral(call_addr: Addr)
+
+BnSizeIsLiteral(ca) :-
+    Call(_, callee, ca),
+    BnSizeArgIndex(callee, size_idx),
+    CallArgConst(ca, size_idx, _).
+
+// (2) A comparison guard exists on the size variable somewhere in the
+//     enclosing function, structurally before the call. This is a
+//     loose recall-first filter; the precise CFG-dominance check is
+//     applied by bn_findings.dl's BnFindingDomGuarded pass on the
+//     unified BnFinding output.
+.decl BnSizeGuardPresent(call_addr: Addr, size_var: Sym)
+
+BnSizeGuardPresent(ca, sv) :-
+    Call(caller, callee, ca),
+    BnSizeArgIndex(callee, size_idx),
+    ActualArg(ca, size_idx, _, sv, _),
+    sv != "0",
+    sv != "NULL",
+    Guard(caller, ga, sv, _, op, _, _),
+    (op = "<" ; op = "<=" ; op = ">" ; op = ">="
+   ; op = "==" ; op = "!="
+   ; op = "u<" ; op = "u<=" ; op = "u>" ; op = "u>="),
+    ga <= ca.
+
+// ── Main output ──────────────────────────────────────────────────────
+// One row per dangerous call whose size argument has no bound evidence.
+
+.decl BnUnboundedSinkCall(caller: Sym, callee: Sym, call_addr: Addr,
+                          size_var: Sym, size_ver: Ver, risk: Sym)
+.output BnUnboundedSinkCall
+
+BnUnboundedSinkCall(caller, callee, ca, sv, sver, risk) :-
+    Call(caller, callee, ca),
+    BnSizeArgIndex(callee, size_idx),
+    BnDangerousSink(callee, size_idx, risk),
+    ActualArg(ca, size_idx, _, sv, sver),
+    sv != "0",
+    sv != "NULL",
+    !BnSizeIsLiteral(ca),
+    !BnSizeGuardPresent(ca, sv).
+
+// Variant: the size is derived from a formal parameter of the caller,
+// with no in-function guard. These are the highest-leverage candidates
+// — safety depends entirely on what the caller (or its caller's caller)
+// happened to pass. Surfaced separately so triage can prioritize them.
+//
+// We BnFlow-trace from any FormalParam to (sv, sver) rather than
+// requiring sv to BE a formal-param name directly: in MLIL-SSA, sizes
+// commonly flow through one or more copy/cast/arith hops before
+// reaching the sink (`size_t n = arg2; ...; memcpy(d, s, n);`). The
+// direct-match form would zero out on virtually every wrapper.
+
+.decl BnUnboundedSinkParamCall(caller: Sym, callee: Sym, call_addr: Addr,
+                               size_var: Sym, size_ver: Ver, risk: Sym)
+.output BnUnboundedSinkParamCall
+
+BnUnboundedSinkParamCall(caller, callee, ca, sv, sver, risk) :-
+    BnUnboundedSinkCall(caller, callee, ca, sv, sver, risk),
+    FormalParam(caller, pv, _),
+    BnFlowRelevant(caller, pv, _, sv, sver).

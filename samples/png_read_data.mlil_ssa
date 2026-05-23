@@ -1,0 +1,6 @@
+00413a64        read_data_fn#1 = png_ptr#0->read_data_fn @ mem#0
+00413a6e        if (read_data_fn#1 == 0) then 2 @ 0x413a72 else 5 @ 0x413a70
+00413a72        read_data_fn_1#1 = read_data_fn#1
+00413a7a        mem#1 = 0x406da0(png_ptr#0, "Call to NULL read function") @ mem#0
+00413a7a        noreturn
+00413a70        jump(read_data_fn#1)

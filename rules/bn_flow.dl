@@ -39,6 +39,7 @@
 .type Sym  <: symbol
 .type Ver  <: unsigned
 .type Hops <: unsigned
+.type Idx  <: unsigned
 
 // MAX_HOPS — the depth bound of the transitive closure on
 // small/medium functions. 10 is generous relative to typical real-world
@@ -54,7 +55,7 @@
 // only genuinely large functions (H.264 motion-compensation inlines,
 // protobuf generated code, etc.) fall back to one-hop flow.
 #ifndef FUNC_SIZE_GATE
-#define FUNC_SIZE_GATE 2000
+#define FUNC_SIZE_GATE 800
 #endif
 
 // ── Input facts ──────────────────────────────────────────────────────
@@ -143,3 +144,189 @@ BnFlow(f, sv, sver, dv, dver) :-
     FuncIsLarge(f).
 
 .output BnFlow
+
+// ── BnFlowRelevant: anchored TC over the relevant-endpoint set ──────
+// Memory-reduction projection of BnFlow (see docs/scaling_roadmap.md).
+// Computes the same flow chains but restricts BOTH endpoints to the
+// `RelevantEndpoint` set — the union of every `(func,var,ver)` that
+// any Bn* rule joins against BnFlow as either LHS or RHS.
+//
+// Intermediates on the chain are unrestricted, so a chain
+// `Guard.var → tmp1 → tmp2 → ActualArg` completes even when tmp1/tmp2
+// aren't relevant. Soundness depends entirely on whether the endpoint
+// roles below cover every binder a Bn* rule uses — enforced by
+// scripts/audit_bnflow_coverage.py as a pytest check.
+
+// Schema inputs needed only for RelevantEndpoint construction. Most
+// already loaded via bn_flow.dl's BnFlow1 inputs (Def, Use, PhiSource);
+// the rest declared here so this rule remains self-contained.
+.decl Call(caller: Sym, callee: Sym, addr: Addr)
+.input Call
+
+.decl ActualArg(call_addr: Addr, arg_idx: Idx, param: Sym,
+                var: Sym, ver: Ver)
+.input ActualArg
+
+.decl FormalParam(func: Sym, var: Sym, idx: Idx)
+.input FormalParam
+
+.decl Guard(func: Sym, addr: Addr, var: Sym, ver: Ver,
+            op: Sym, bound: Sym, bound_type: Sym)
+.input Guard
+
+.decl ArithOp(func: Sym, addr: Addr, dst: Sym, dst_ver: Ver,
+              op: Sym, src: Sym, src_ver: Ver, operand: Sym)
+.input ArithOp
+
+.decl Cast(func: Sym, addr: Addr, dst: Sym, dst_ver: Ver,
+           src: Sym, src_ver: Ver, kind: Sym,
+           src_width: unsigned, dst_width: unsigned)
+.input Cast
+
+.decl AllocSite(call_addr: Addr, func: Sym, size_var: Sym,
+                size_const: Sym, elem_width: unsigned)
+.input AllocSite
+
+.decl MemWrite(func: Sym, addr: Addr, target: Sym,
+               mem_in: Ver, mem_out: Ver)
+.input MemWrite
+
+.decl MemRead(func: Sym, addr: Addr, base: Sym, offset: Sym, size: Sym)
+.input MemRead
+
+.decl MemWriteSize(func: Sym, addr: Addr, size: unsigned)
+.input MemWriteSize
+
+.decl AddressOf(func: Sym, var: Sym, ver: Ver, target: Sym)
+.input AddressOf
+
+.decl Jump(func: Sym, addr: Addr, expr: Sym)
+.input Jump
+
+// TaintedVar/TaintedSink are present only if interproc.dl has run
+// already and its outputs are staged into facts/. Empty placeholders
+// produce 0 RelevantEndpoint rows from those clauses — graceful
+// degradation when bn_flow.dl runs before taint.
+.decl TaintedVar(func: Sym, var: Sym, ver: Ver, origin: Sym, ctx: Addr)
+.input TaintedVar
+
+.decl TaintedSink(caller: Sym, callee: Sym, call_addr: Addr,
+                  arg_idx: Idx, tainted_var: Sym, risk: Sym,
+                  origin: Sym)
+.input TaintedSink
+
+// ── RelevantEndpoint definition ───────────────────────────────────
+// Every endpoint role any Bn* consumer joins onto BnFlow.
+// CHANGE WITH CARE: scripts/audit_bnflow_coverage.py asserts that
+// every BnFlow(...) binder in the rules/ tree maps to one of these
+// clauses. New rules adding new join shapes MUST add a clause here.
+
+.decl RelevantEndpoint(func: Sym, var: Sym, ver: Ver)
+
+// Guard.var (used by ~7 rules)
+RelevantEndpoint(f, v, ver) :- Guard(f, _, v, ver, _, _, _).
+
+// AllocSite result: the SSA name Def'd at the alloc call site.
+// Excludes the "0"/"NULL"/"mem" sentinel names also excluded by
+// bn_allocator_mismatch::BnAllocDef.
+RelevantEndpoint(f, v, ver) :-
+    Call(f, _, ca),
+    Def(f, v, ver, ca),
+    v != "mem", v != "0", v != "NULL".
+
+// AllocSite.size_var: the size argument's SSA def.
+RelevantEndpoint(f, v, ver) :-
+    AllocSite(_, f, v, _, _),
+    Def(f, v, ver, _),
+    v != "_".
+
+// Cast endpoints (both src and dst).
+RelevantEndpoint(f, v, ver) :- Cast(f, _, v, ver, _, _, _, _, _).
+RelevantEndpoint(f, v, ver) :- Cast(f, _, _, _, v, ver, _, _, _).
+
+// ArithOp endpoints (both dst and src).
+RelevantEndpoint(f, v, ver) :- ArithOp(f, _, v, ver, _, _, _, _).
+RelevantEndpoint(f, v, ver) :- ArithOp(f, _, _, _, _, v, ver, _).
+
+// FormalParam — pin to its actual SSA def.
+RelevantEndpoint(f, v, ver) :- FormalParam(f, v, _), Def(f, v, ver, _).
+
+// ActualArg.var — note ActualArg keys on call_addr; bind func via Call.
+RelevantEndpoint(f, v, ver) :- ActualArg(ca, _, _, v, ver), Call(f, _, ca).
+
+// MemWrite.target (e.g. bn_sentinel_init RHS, distinct from MemWriteSize).
+RelevantEndpoint(f, v, ver) :- MemWrite(f, _, v, _, _), Def(f, v, ver, _).
+
+// MemRead.base — pointer used as a memory-read base; covers
+// bn_counter_oob's `counter -> MemRead(base=counter)` OOB-read pattern.
+RelevantEndpoint(f, v, ver) :- MemRead(f, _, v, _, _), Def(f, v, ver, _).
+
+// Use endpoints at memory-access / narrow-store addresses. Some Bn*
+// rules bind a flow destination via `Use(f, v, ver, a)` where `a` is
+// the address of an interesting fact (MemRead/MemWrite/MemWriteSize).
+// Without these clauses, `BnFlow(_, _, _, v, ver)` projections from
+// those rules would drop. Conservative inclusion of all such Uses.
+RelevantEndpoint(f, v, ver) :- MemRead(f, a, _, _, _), Use(f, v, ver, a).
+RelevantEndpoint(f, v, ver) :- MemWrite(f, a, _, _, _), Use(f, v, ver, a).
+RelevantEndpoint(f, v, ver) :- MemWriteSize(f, a, _), Use(f, v, ver, a).
+
+// AddressOf endpoints (both the address-of var and its target).
+RelevantEndpoint(f, v, ver) :- AddressOf(f, v, ver, _).
+RelevantEndpoint(f, v, ver) :- AddressOf(f, _, _, v), Def(f, v, ver, _).
+
+// Jump operands — conservative inclusion of any Use at a Jump addr,
+// since bn_loop_bound joins onto whatever variable the jump's compare
+// references and we can't statically narrow that.
+RelevantEndpoint(f, v, ver) :- Jump(f, a, _), Use(f, v, ver, a).
+
+// TaintedVar and TaintedSink.tainted_var (graceful degradation when
+// taint hasn't run — produces 0 rows from these clauses).
+RelevantEndpoint(f, v, ver) :- TaintedVar(f, v, ver, _, _).
+RelevantEndpoint(f, v, ver) :-
+    TaintedSink(f, _, _, _, v, _, _),
+    Def(f, v, ver, _).
+
+.output RelevantEndpoint
+
+// ── Anchored hop-counted TC ────────────────────────────────────────
+// Seeds from RelevantEndpoint sources; intermediate vars unrestricted
+// (preserves chains through copies/spills); final BnFlowRelevant
+// projection then prunes to relevant→relevant pairs.
+
+.decl BnFlowH_anchored(func: Sym, src_var: Sym, src_ver: Ver,
+                       dst_var: Sym, dst_ver: Ver, hops: Hops)
+
+BnFlowH_anchored(f, sv, sver, dv, dver, 1) :-
+    BnFlow1(f, sv, sver, dv, dver),
+    RelevantEndpoint(f, sv, sver),
+    !FuncIsLarge(f).
+
+BnFlowH_anchored(f, sv, sver, dv, dver, h2) :-
+    BnFlowH_anchored(f, sv, sver, mid, mver, h1),
+    h1 < MAX_HOPS,
+    BnFlow1(f, mid, mver, dv, dver),
+    h2 = h1 + 1,
+    (sv != dv ; sver != dver).
+
+// ── BnFlowRelevant: final projection (same shape as BnFlow) ────────
+.decl BnFlowRelevant(func: Sym, src_var: Sym, src_ver: Ver,
+                     dst_var: Sym, dst_ver: Ver)
+
+// Identity rows for every relevant Def — matches consumers' (v,ver,v,ver) base case.
+BnFlowRelevant(f, v, ver, v, ver) :-
+    RelevantEndpoint(f, v, ver),
+    Def(f, v, ver, _).
+
+// Multi-hop closure, both endpoints relevant.
+BnFlowRelevant(f, sv, sver, dv, dver) :-
+    BnFlowH_anchored(f, sv, sver, dv, dver, _),
+    RelevantEndpoint(f, dv, dver).
+
+// Large-function fallback: 1-hop only (parallel to BnFlow's structure).
+BnFlowRelevant(f, sv, sver, dv, dver) :-
+    BnFlow1(f, sv, sver, dv, dver),
+    FuncIsLarge(f),
+    RelevantEndpoint(f, sv, sver),
+    RelevantEndpoint(f, dv, dver).
+
+.output BnFlowRelevant

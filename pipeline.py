@@ -13,9 +13,26 @@ module-level state. Behavior is identical to the original tool bodies.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from typing import Optional
+
+
+def _stage(src: Path, dst: Path) -> None:
+    """Stage `src` as `dst` via symlink (cheap, no RAM spike).
+
+    Souffle treats `.facts` inputs as read-only, so symlinks are safe.
+    Avoids the multi-second + multi-GB RAM cost of read_text/write_text
+    when the source CSV is large (e.g. BnFlow.csv ≈ 1.3 GB on FFmpeg).
+
+    No-op if `src` doesn't exist — caller may follow up with `dst.touch()`
+    to create an empty placeholder.
+    """
+    if dst.is_symlink() or dst.exists():
+        dst.unlink()
+    if src.exists():
+        os.symlink(src.resolve(), dst)
 
 
 def souffle_cmd(
@@ -183,13 +200,11 @@ def run_taint_pipeline(
     pts_src = odir / "PointsTo.csv"
     pts_dst = fdir / "PointsTo.facts"
     if pts_src.exists():
-        pts_content = pts_src.read_text().strip()
-        if pts_content:
-            pts_dst.write_text(pts_content + '\n')
-            results["points_to_facts"] = pts_content.count('\n') + 1
-        else:
-            pts_dst.touch()
-            results["points_to_facts"] = 0
+        # Symlink to avoid a read+write copy of the full PointsTo CSV
+        # before interproc.dl reads it.
+        _stage(pts_src, pts_dst)
+        stripped = pts_src.read_text(errors="replace").strip()
+        results["points_to_facts"] = stripped.count('\n') + 1 if stripped else 0
     else:
         pts_dst.touch()
         results["points_to_facts"] = 0
@@ -239,7 +254,15 @@ _TAINT_OUTPUTS = [
 # can read them via .input. Order matters: bn_flow.dl produces BnFlow
 # which everything downstream consumes.
 _BN_STAGE_AFTER: dict[str, list[tuple[str, str]]] = {
-    "bn_flow.dl":           [("BnFlow.csv",                   "BnFlow.facts")],
+    # bn_flow.dl emits BnFlow (retained for parity/backward-compat window —
+    # see docs/scaling_roadmap.md §3.3 D3) and BnFlowRelevant (the pruned
+    # anchored TC — Phase 2 switchover complete 2026-05-22; all consumers
+    # now .input BnFlowRelevant). BnFlow.csv is staged but no Bn* consumer
+    # reads BnFlow.facts anymore; it exists only so bnflow_parity_check.py
+    # can run the A (full) vs B (pruned) comparison.
+    "bn_flow.dl":           [("BnFlow.csv",                   "BnFlow.facts"),
+                             ("BnFlowRelevant.csv",           "BnFlowRelevant.facts"),
+                             ("RelevantEndpoint.csv",         "RelevantEndpoint.facts")],
     "bn_signed_infer.dl":   [("BnSignedness.csv",             "BnSignedness.facts")],
     "bn_counter_oob.dl":    [("BnUnboundedCounter.csv",       "BnUnboundedCounter.facts"),
                              ("BnTaintedUnboundedCounter.csv","BnTaintedUnboundedCounter.facts"),
@@ -260,6 +283,29 @@ _BN_STAGE_AFTER: dict[str, list[tuple[str, str]]] = {
                              ("BnSentinelNarrowAlloc.csv",    "BnSentinelNarrowAlloc.facts"),
                              ("BnSentinelCollisionRisk.csv",  "BnSentinelCollisionRisk.facts")],
     "bn_null_deref.dl":     [("BnNullDeref.csv",              "BnNullDeref.facts")],
+    # Tier-1 NeuroLog imports (2026-05-21).
+    "bn_allocator_mismatch.dl": [
+        ("BnAllocatorMismatch.csv", "BnAllocatorMismatch.facts"),
+        ("BnAllocDef.csv",          "BnAllocDef.facts"),
+        ("BnFreeCall.csv",          "BnFreeCall.facts"),
+    ],
+    "bn_unbounded_sink_audit.dl": [
+        ("BnUnboundedSinkCall.csv",      "BnUnboundedSinkCall.facts"),
+        ("BnUnboundedSinkParamCall.csv", "BnUnboundedSinkParamCall.facts"),
+    ],
+    "bn_joint_buffer_bound.dl": [
+        ("BnJointBufferBoundUnsafe.csv", "BnJointBufferBoundUnsafe.facts"),
+        ("BnJointBufferBoundSite.csv",   "BnJointBufferBoundSite.facts"),
+        ("BnOffsetCopySink.csv",         "BnOffsetCopySink.facts"),
+        ("BnJointCandidate.csv",         "BnJointCandidate.facts"),
+        ("BnCapacityGuard.csv",          "BnCapacityGuard.facts"),
+        ("BnSmallConstGuard.csv",        "BnSmallConstGuard.facts"),
+    ],
+    "bn_type_confusion.dl": [
+        ("BnPtrIntTruncation.csv",       "BnPtrIntTruncation.facts"),
+        ("BnPtrToNarrow.csv",            "BnPtrToNarrow.facts"),
+        ("BnNarrowToPtr.csv",            "BnNarrowToPtr.facts"),
+    ],
     "bn_guard_dominates.dl": [("GuardDominates.csv",           "GuardDominates.facts"),
                               ("BnGuardSubsumedSink.csv",      "BnGuardSubsumedSink.facts"),
                               ("BnUnguardedDom.csv",           "BnUnguardedDom.facts"),
@@ -291,6 +337,17 @@ _BN_STAGE_AFTER: dict[str, list[tuple[str, str]]] = {
     ],
 }
 
+# Per-rule jobs override. Memory-bound passes regress under Souffle's
+# parallel evaluation (per-thread stratum caches multiply peak RSS by
+# N_threads while wall-time gain is <2×). For these passes we force
+# single-threaded eval. CPU-bound TC-style passes (bn_flow) keep "auto".
+# See docs/scaling_roadmap.md §4.4. Anything not listed falls back to
+# the caller-supplied `jobs` argument.
+_BN_RULE_JOBS: dict[str, str] = {
+    "bn_guard_dominates.dl": "1",   # ReachSkip O(V³) × parallel = OOM (2026-05-21 FFmpeg incident)
+    "bn_findings.dl":        "1",   # aggregates all Bn* outputs; heavy join load
+}
+
 _BN_RULE_FILES = [
     "bn_flow.dl",
     "bn_signed_infer.dl",
@@ -303,6 +360,14 @@ _BN_RULE_FILES = [
     "bn_width_mismatch.dl",
     "bn_sentinel_init.dl",
     "bn_null_deref.dl",
+    # Tier-1 NeuroLog imports (2026-05-21 audit). Each is a structural
+    # pattern over the existing fact base; bn_allocator_mismatch
+    # additionally requires user-supplied AllocFamily/FreeFamily rows in
+    # the facts dir (empty .facts file = rule fires no rows, no error).
+    "bn_allocator_mismatch.dl",
+    "bn_unbounded_sink_audit.dl",
+    "bn_joint_buffer_bound.dl",
+    "bn_type_confusion.dl",
     # Path-sensitive guard subsumption (CFG-dominance refinement of
     # GuardedSink). Requires CFGBlockEdge + BlockHead from the
     # extractor. Runs after structural Bn* rules so its outputs
@@ -365,7 +430,7 @@ def run_bn_extra_rules(
         csv = odir / f"{rel}.csv"
         facts = fdir / f"{rel}.facts"
         if csv.exists():
-            facts.write_text(csv.read_text())
+            _stage(csv, facts)
         elif not facts.exists():
             facts.touch()
 
@@ -376,16 +441,20 @@ def run_bn_extra_rules(
         if not rf_path.exists():
             return {"error": f"Rule file not found: {rf_path}"}
 
+        # Per-rule jobs override (see _BN_RULE_JOBS). Falls back to the
+        # caller's `jobs` arg when the rule isn't memory-bound.
+        rule_jobs = _BN_RULE_JOBS.get(rf, jobs)
+
         try:
             r = subprocess.run(
-                souffle_cmd(rf_path, fdir, odir, jobs, compile_mode),
+                souffle_cmd(rf_path, fdir, odir, rule_jobs, compile_mode),
                 capture_output=True, text=True, timeout=timeout_seconds,
             )
         except subprocess.TimeoutExpired:
             results["passes"][rf] = {"error": f"timed out after {timeout_seconds}s"}
             return results
 
-        results["passes"][rf] = {"return_code": r.returncode}
+        results["passes"][rf] = {"return_code": r.returncode, "jobs": rule_jobs}
         if r.returncode != 0:
             results["passes"][rf]["stderr"] = r.stderr.strip()
 
@@ -393,8 +462,7 @@ def run_bn_extra_rules(
             src = odir / csv_name
             dst = fdir / facts_name
             if src.exists():
-                content = src.read_text().strip()
-                dst.write_text(content + "\n" if content else "")
+                _stage(src, dst)
 
     for f in sorted(odir.glob("Bn*.csv")):
         content = f.read_text().strip()

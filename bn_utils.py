@@ -72,7 +72,8 @@ def run_bn_script(script_path: str | Path, args: list[str],
 
 
 def extract_facts_batch(binary_path: str, function_names: list[str] | None,
-                        facts_dir: str, extract_all: bool = False) -> dict:
+                        facts_dir: str, extract_all: bool = False,
+                        timeout: int | None = None) -> dict:
     """Run bn_extract_facts.py headlessly and return parsed JSON summary.
 
     Args:
@@ -80,6 +81,10 @@ def extract_facts_batch(binary_path: str, function_names: list[str] | None,
         function_names: List of function names to extract (ignored if extract_all).
         facts_dir: Directory to write .facts files.
         extract_all: If True, extract all functions.
+        timeout: Subprocess timeout in seconds. Defaults: 300s for the
+                 function-list mode, 3600s for `extract_all=True` (BN
+                 needs serious time on libxml2/ffmpeg-scale binaries).
+                 Override via the BINCODEQL_BN_TIMEOUT env var.
 
     Returns:
         Dict with extraction summary (functions_processed, relations, total_facts)
@@ -97,10 +102,17 @@ def extract_facts_batch(binary_path: str, function_names: list[str] | None,
     else:
         return {"error": "Specify function_names or extract_all=True"}
 
+    if timeout is None:
+        env_to = os.environ.get("BINCODEQL_BN_TIMEOUT")
+        if env_to and env_to.isdigit():
+            timeout = int(env_to)
+        else:
+            timeout = 3600 if extract_all else 300
+
     try:
-        proc = run_bn_script(script, cmd_args)
+        proc = run_bn_script(script, cmd_args, timeout=timeout)
     except subprocess.TimeoutExpired:
-        return {"error": "BN extraction timed out (300s)"}
+        return {"error": f"BN extraction timed out ({timeout}s)"}
 
     if proc.returncode == 0:
         try:

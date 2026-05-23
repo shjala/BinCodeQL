@@ -26,9 +26,9 @@
 .decl CFGEdge(func: Sym, from_addr: Addr, to_addr: Addr)
 .input CFGEdge
 
-.decl BnFlow(func: Sym, src_var: Sym, src_ver: Ver,
+.decl BnFlowRelevant(func: Sym, src_var: Sym, src_ver: Ver,
              dst_var: Sym, dst_ver: Ver)
-.input BnFlow
+.input BnFlowRelevant
 
 // ── CFG reachability (transitive) ────────────────────────────────────
 .decl BnCFGReach(func: Sym, from_addr: Addr, to_addr: Addr)
@@ -54,7 +54,7 @@ BnGuardedBeforeCast(f, ca, src, sver) :-
 //     source. Covers phi-merge and copy chains.
 BnGuardedBeforeCast(f, ca, src, sver) :-
     Cast(f, ca, _, _, src, sver, _, _, _),
-    BnFlow(f, gv, gver, src, sver),
+    BnFlowRelevant(f, gv, gver, src, sver),
     Guard(f, ga, gv, gver, _, _, _),
     BnCFGReach(f, ga, ca).
 

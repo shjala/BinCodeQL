@@ -1,0 +1,400 @@
+0041d15a        r13#1 = length#0
+0041d160        rbp#1 = png_ptr#0
+0041d16b        var_54c @ mem#0 -> mem#1 = length#0
+0041d16f        rax#1 = [fsbase#0 + 0x28].q @ mem#1
+0041d178        var_40#1 = rax#1
+0041d180        rax_1#2 = 0
+0041d185        if (length#0 u> 0x50) then 7 @ 0x41d1bd else 13 @ 0x41d187
+0041d1bd        rbx_1#1 = info_ptr#0
+0041d1c5        skip#2 = r13#1 - 0x51
+0041d1c9        rsi_2#1 = &keyword
+0041d1cc        mem#2 = 0x41a2f0(png_ptr#0, rsi_2#1, 0x51) @ mem#1
+0041d1d1        var_54c @ mem#2 -> mem#3 = skip#2
+0041d1da        if (skip#2 u<= 0xa) then 17 else 18 @ 0x41d1dc
+0041d187        rsi#22 = &keyword
+0041d18c        skip#9 = 0
+0041d18f        mem#53 = 0x41a2f0(png_ptr#0, rsi#22, length#0) @ mem#1
+0041d18f        goto 21 @ 0x41d194
+0041d1da        goto 21 @ 0x41d194
+0041d1dc        rax_2#3 = &keyword
+0041d1df        r12_1#1 = 0
+0041d1e2        goto 32 @ 0x41d1f9
+0041d194        rbx_1#2 = ϕ(rbx#0, rbx_1#1)
+0041d194        rsi#23 = ϕ(rsi_2#1, rsi#22)
+0041d194        skip#10 = ϕ(skip#2, skip#9)
+0041d194        mem#54 = ϕ(mem#3, mem#53)
+0041d194        rsi_1#24 = skip#10
+0041d197        rdi#27 = rbp#1
+0041d19a        mem#55 = 0x41a590(rdi#27, rsi_1#24) @ mem#54
+0041d1a6        rdi_1#28 = rbp#1
+0041d1a9        mem#56 = 0x406b30(rdi_1#28, "too short") @ mem#55
+0041d1ae        result#48 = 0
+0041d1b0        goto 35 @ 0x41d231
+0041d1f9        rax_2#4 = ϕ(rax_2#3, rax_2#5)
+0041d1f9        r12_1#2 = ϕ(r12_1#1, r12_1#3)
+0041d1f9        if ([rax_2#4].b @ mem#3 != 0) then 63 @ 0x41d1e8 else 66 @ 0x41d1fb
+0041d231        var_580_3#9 = ϕ(var_580#0, var_580_3#3, var_580_3#4, var_580_3#6, var_580_3#8)
+0041d231        var_574_1#6 = ϕ(var_574#0, var_574_1#1, var_574_1#3, var_574_1#5)
+0041d231        var_570_2#8 = ϕ(var_570#0, next_out#1, var_570_2#4, next_out#5, next_out#7)
+0041d231        var_568_1#9 = ϕ(var_568#0, var_568_1#3, var_568_1#4, var_568_1#6, var_568_1#8)
+0041d231        var_558_2#8 = ϕ(var_558#0, var_558_2#2, var_558_2#3, var_558_2#5, var_558_2#7)
+0041d231        var_54f_1#7 = ϕ(var_54f#0, var_54f_1#1, var_54f_1#2, var_54f_1#4, var_54f_1#6)
+0041d231        var_54e_1#7 = ϕ(var_54e#0, var_54e_1#1, var_54e_1#2, var_54e_1#4, var_54e_1#6)
+0041d231        var_54d_1#7 = ϕ(var_54d#0, var_54d_1#1, var_54d_1#2, var_54d_1#4, var_54d_1#6)
+0041d231        result#49 = ϕ(result#38, result#40, result#43, result#47, result#48)
+0041d231        rcx_5#13 = ϕ(rcx#0, rcx_6#7, rcx_4#8, rcx_5#10, rcx_5#12)
+0041d231        rdx_17#22 = ϕ(length#0, rdx_17#16, rdx_16#17, rdx_17#19, rdx_17#21)
+0041d231        rbx_1#3 = ϕ(rbx_1#1, rbx_1#2)
+0041d231        rsi_1#25 = ϕ(rsi_16#12, rsi_8#14, rsi_5#17, rsi_4#21, rsi_1#24)
+0041d231        rdi_1#29 = ϕ(rdi_20#17, rdi_8#19, rdi_5#22, rdi_3#26, rdi_1#28)
+0041d231        r8_4#10 = ϕ(r8#0, r8_4#4, r8_3#5, r8_4#7, r8_4#9)
+0041d231        r10_7#17 = ϕ(r10#0, r10_8#11, r10_6#12, r10_7#14, r10_7#16)
+0041d231        size_1#11 = ϕ(r12#0, size_1#4, size_1#5, size_1#7, r12_1#10)
+0041d231        skip#11 = ϕ(skip#2, skip#4, skip#6, skip#8, skip#10)
+0041d231        msg#12 = ϕ(r14#0, msg#1, msg#8, msg#11)
+0041d231        cond:0_1#7 = ϕ(cond:0#0, cond:0_1#1, cond:0_1#2, cond:0_1#4, cond:0_1#6)
+0041d231        cond:1_1#7 = ϕ(cond:1#0, cond:1_1#1, cond:1_1#2, cond:1_1#4, cond:1_1#6)
+0041d231        cond:2_1#4 = ϕ(cond:2#0, cond:2_1#2, cond:2_1#3)
+0041d231        mem#57 = ϕ(mem#40, mem#44, mem#48, mem#52, mem#56)
+0041d231        rdx#23 = var_40#1
+0041d239        temp0#1 = rdx#23
+0041d239        temp1#1 = [fsbase#0 + 0x28].q @ mem#57
+0041d239        rdx_1#24 = rdx#23 - [fsbase#0 + 0x28].q @ mem#57
+0041d242        if (temp0#1 != temp1#1) then 68 @ 0x41d561 else 70 @ 0x41d259
+0041d1e8        r12_1#3 = r12_1#2 + 1
+0041d1ec        rax_2#5 = rax_2#4 + 1
+0041d1f4        if (r12_1#3 == 0x50) then 71 else 72
+0041d1fb        rax_3#6 = r12_1#2 - 1
+0041d203        if (rax_3#6 u> 0x4e) then 73 else 74 @ 0x41d205
+0041d561        mem#58 = 0x406b90() @ mem#57
+0041d561        noreturn
+0041d259        return result#49
+0041d1f4        goto 77 @ 0x41d260
+0041d1f4        goto 32 @ 0x41d1f9
+0041d203        goto 77 @ 0x41d260
+0041d205        r10_1#1 = zx.q(r12_1#2 + 1)
+0041d20a        msg#1 = "bad compression method"
+0041d217        if ([&keyword + r10_1#1].b @ mem#3 == 0) then 81 @ 0x41d275 else 85
+0041d260        rax_3#44 = ϕ(rax_2#5, rax_3#6)
+0041d260        r12_1#8 = ϕ(r12_1#2, r12_1#3)
+0041d260        msg#9 = "bad keyword"
+0041d267        goto 86 @ 0x41d219
+0041d275        rdi_4#1 = rbp#1
+0041d278        var_580_1#1 = r10_1#1
+0041d27d        rax_4#7, mem#4 = 0x419e80(rdi_4#1, 0x69434350) @ mem#3
+0041d284        if (rax_4#7 == 0) then 111 @ 0x41d2a1 else 126 @ 0x41d286
+0041d217        goto 86 @ 0x41d219
+0041d219        var_580_3#7 = ϕ(var_580#0, var_580_3#3)
+0041d219        var_574_1#4 = ϕ(var_574#0, var_574_1#1)
+0041d219        next_out#6 = ϕ(var_570#0, next_out#1)
+0041d219        var_568_1#7 = ϕ(var_568#0, var_568_1#1, var_568_1#3)
+0041d219        var_558_2#6 = ϕ(var_558#0, var_558_1#1, var_558_2#2)
+0041d219        var_54f_1#5 = ϕ(var_54f#0, var_54f_1#1)
+0041d219        var_54e_1#5 = ϕ(var_54e#0, var_54e_1#1)
+0041d219        var_54d_1#5 = ϕ(var_54d#0, var_54d_1#1)
+0041d219        rax_3#45 = ϕ(rax_3#6, profile#23, rax_27#33, rax_3#44)
+0041d219        rcx_5#11 = ϕ(rcx#0, rcx_2#2, rcx_5#5)
+0041d219        rdx_17#20 = ϕ(length#0, rdx_9#8, rdx_17#16)
+0041d219        rsi_13#18 = ϕ(rsi_2#1, rsi_10#5, rsi_13#8)
+0041d219        rdi_15#23 = ϕ(png_ptr#0, rdi_10#5, rdi_15#10)
+0041d219        r8_4#8 = ϕ(r8#0, r8_2#2, r8_4#4)
+0041d219        r10_7#15 = ϕ(r10#0, r10_1#1, r10_4#4, r10_7#7)
+0041d219        r12_1#9 = ϕ(r12_1#2, size_1#4, r12_1#8)
+0041d219        skip#7 = ϕ(skip#2, skip#3, skip#4)
+0041d219        msg#10 = ϕ(msg#1, msg#2, msg#3, msg#9)
+0041d219        cond:0_1#5 = ϕ(cond:0#0, cond:0_1#1)
+0041d219        cond:1_1#5 = ϕ(cond:1#0, cond:1_1#1)
+0041d219        mem#49 = ϕ(mem#3, mem#14, mem#24)
+0041d219        rsi_3#19 = skip#7
+0041d21c        rdi_2#24 = rbp#1
+0041d21f        mem#50 = 0x41a590(rdi_2#24, rsi_3#19) @ mem#49
+0041d21f        goto 128 @ 0x41d224
+0041d2a1        rax_5#8 = zx.q(r12_1#2 + 2)
+0041d2ae        rdi_6#2 = rbp#1
+0041d2b1        rax_6#9 = rax_5#8 + &keyword
+0041d2c0        rdx_2#1 = &var_54c
+0041d2c3        rbp#1->zstream.next_in = rax_6#9 @ mem#4 -> mem#5
+0041d2cf        rsi_6#2 = &local_buffer
+0041d2d2        rax_7#10 = 0x4f - r12_1#2
+0041d2e8        rbp#1->zstream.avail_in = rax_7#10 @ mem#5 -> mem#6
+0041d2f3        rcx_1#1 = &profile_header
+0041d2f6        r8_1#1 = &size
+0041d2f9        next_out#1 = &size
+0041d2fe        size @ mem#6 -> mem#7 = 0x84
+0041d307        mem#8 = 0x436608(&profile_header:0, 0, 0x84) @ mem#7
+0041d347        mem#9 = 0x41cfe0(rdi_6#2, rsi_6#2, rdx_2#1, rcx_1#1, r8_1#1, nullptr, finish#0) @ mem#8
+0041d352        if (size @ mem#9 == 0) then 155 @ 0x41d36f else 172
+0041d286        msg#7 = rbp#1->zstream.msg @ mem#4
+0041d286        goto 173 @ 0x41d28d
+0041d224        var_580_3#8 = ϕ(var_580_3#3, var_580_3#6, var_580_3#7)
+0041d224        var_574_1#5 = ϕ(var_574_1#1, var_574_1#3, var_574_1#4)
+0041d224        next_out#7 = ϕ(var_570_2#4, next_out#5, next_out#6)
+0041d224        var_568_1#8 = ϕ(var_568_1#3, var_568_1#6, var_568_1#7)
+0041d224        var_558_2#7 = ϕ(var_558_2#2, var_558_2#5, var_558_2#6)
+0041d224        var_54f_1#6 = ϕ(var_54f_1#1, var_54f_1#4, var_54f_1#5)
+0041d224        var_54e_1#6 = ϕ(var_54e_1#1, var_54e_1#4, var_54e_1#5)
+0041d224        var_54d_1#6 = ϕ(var_54d_1#1, var_54d_1#4, var_54d_1#5)
+0041d224        rax_3#46 = ϕ(rax_28#34, rax_27#42, rax_3#45)
+0041d224        rcx_5#12 = ϕ(rcx_5#5, rcx_5#10, rcx_5#11)
+0041d224        rdx_17#21 = ϕ(rdx_17#16, rdx_17#19, rdx_17#20)
+0041d224        rsi_3#20 = ϕ(rsi_16#11, rsi_5#17, rsi_3#19)
+0041d224        rdi_2#25 = ϕ(rdi_19#15, rdi_5#22, rdi_2#24)
+0041d224        r8_4#9 = ϕ(r8_4#4, r8_4#7, r8_4#8)
+0041d224        r10_7#16 = ϕ(r10_8#10, r10_7#14, r10_7#15)
+0041d224        r12_1#10 = ϕ(size_1#4, size_1#7, r12_1#9)
+0041d224        skip#8 = ϕ(skip#4, skip#6, skip#7)
+0041d224        msg#11 = ϕ(msg#4, msg#8, msg#10)
+0041d224        cond:0_1#6 = ϕ(cond:0_1#1, cond:0_1#4, cond:0_1#5)
+0041d224        cond:1_1#6 = ϕ(cond:1_1#1, cond:1_1#4, cond:1_1#5)
+0041d224        cond:2_1#3 = ϕ(cond:2#0, cond:2_1#1)
+0041d224        mem#51 = ϕ(mem#30, mem#48, mem#50)
+0041d224        rsi_4#21 = msg#11
+0041d227        rdi_3#26 = rbp#1
+0041d22a        mem#52 = 0x406b30(rdi_3#26, rsi_4#21) @ mem#51
+0041d22f        result#47 = 0
+0041d22f        goto 35 @ 0x41d231
+0041d36f        rax_8#11 = zx.d(profile_header[0] @ mem#9)
+0041d377        rdx_3#2 = zx.d(profile_header[1] @ mem#9)
+0041d37f        rsi_7#3 = &keyword
+0041d382        rdi_7#3 = rbp#1
+0041d385        rdx_4#3 = rdx_3#2 << 0x10
+0041d388        rax_9#12 = rax_8#11 << 0x18
+0041d38b        rax_10#13 = rax_9#12 + rdx_4#3
+0041d38d        rdx_5#4 = zx.d(profile_header[3] @ mem#9)
+0041d395        rax_11#14 = rax_10#13 + rdx_5#4
+0041d397        rdx_6#5 = zx.d(profile_header[2] @ mem#9)
+0041d39f        rdx_7#6 = rdx_6#5 << 8
+0041d3a2        profile_length#15 = rax_11#14 + rdx_7#6
+0041d3a4        rdx_8#7 = profile_length#15
+0041d3a6        var_574_1#1 = profile_length#15
+0041d3aa        rax_12#16, mem#10 = 0x408790(rdi_7#3, rsi_7#3, rdx_8#7) @ mem#9
+0041d3af        r10_2#2 = var_580_1#1
+0041d3b6        if (rax_12#16 != 0) then 198 @ 0x41d3d5 else 207
+0041d352        goto 208 @ 0x41d354
+0041d28d        var_580_3#6 = ϕ(var_580_1#1, var_580_3#3, var_580_3#5)
+0041d28d        var_574_1#3 = ϕ(var_574#0, var_574_1#1, var_574_1#2)
+0041d28d        next_out#5 = ϕ(var_570#0, next_out#1)
+0041d28d        var_568_1#6 = ϕ(var_568#0, var_568_1#3, var_568_1#5)
+0041d28d        var_558_2#5 = ϕ(var_558#0, var_558_2#2, var_558_2#4)
+0041d28d        var_54f_1#4 = ϕ(var_54f#0, var_54f_1#1, var_54f_1#3)
+0041d28d        var_54e_1#4 = ϕ(var_54e#0, var_54e_1#1, var_54e_1#3)
+0041d28d        var_54d_1#4 = ϕ(var_54d#0, var_54d_1#1, var_54d_1#3)
+0041d28d        rax_27#42 = ϕ(rax_4#7, rax_27#33, rax_22#41)
+0041d28d        rcx_5#10 = ϕ(rcx#0, rcx_5#5, rcx_3#9)
+0041d28d        rdx_17#19 = ϕ(length#0, rdx_17#16, rdx_15#18)
+0041d28d        rsi_13#16 = ϕ(rsi_2#1, rsi_10#5, rsi_11#15)
+0041d28d        rdi_15#21 = ϕ(rdi_4#1, rdi_15#10, rdi_13#20)
+0041d28d        r8_4#7 = ϕ(r8#0, r8_4#4, r8_3#6)
+0041d28d        r10_7#14 = ϕ(r10_1#1, r10_7#7, r10_5#13)
+0041d28d        size_1#7 = ϕ(r12_1#2, size_1#4, size_1#6)
+0041d28d        skip#6 = ϕ(skip#2, skip#4, skip#5)
+0041d28d        msg#8 = ϕ(msg#5, msg#6, msg#7)
+0041d28d        cond:0_1#4 = ϕ(cond:0#0, cond:0_1#1, cond:0_1#3)
+0041d28d        cond:1_1#4 = ϕ(cond:1#0, cond:1_1#1, cond:1_1#3)
+0041d28d        mem#47 = ϕ(mem#4, mem#41, mem#46)
+0041d28d        rsi_5#17 = skip#6
+0041d290        rdi_5#22 = rbp#1
+0041d293        mem#48 = 0x41a590(rdi_5#22, rsi_5#17) @ mem#47
+0041d29b        if (msg#8 != 0) then 230 else 231 @ 0x41d29d
+0041d3d5        rdx_9#8 = var_574_1#1
+0041d3d9        rcx_2#2 = &profile_header
+0041d3dc        rsi_9#4 = &keyword
+0041d3df        rdi_9#4 = rbp#1
+0041d3e2        r8_2#2 = zx.d(rbp#1->color_type @ mem#10)
+0041d3ea        var_580_2#2 = r10_2#2
+0041d3ef        rax_13#17, mem#11 = 0x408810(rdi_9#4, rsi_9#4, rdx_9#8, rcx_2#2, r8_2#2) @ mem#10
+0041d3f4        r10_3#3 = var_580_2#2
+0041d3fb        if (rax_13#17 == 0) then 233 else 234 @ 0x41d3fd
+0041d3b6        goto 252 @ 0x41d3b8
+0041d354        var_580_3#5 = ϕ(var_580_1#1, var_580_3#3)
+0041d354        var_574_1#2 = ϕ(var_574#0, var_574_1#1)
+0041d354        var_568_1#5 = ϕ(var_568#0, var_568_1#1)
+0041d354        var_558_2#4 = ϕ(var_558#0, var_558_2#2)
+0041d354        var_54f_1#3 = ϕ(var_54f#0, var_54f_1#1)
+0041d354        var_54e_1#3 = ϕ(var_54e#0, var_54e_1#1)
+0041d354        var_54d_1#3 = ϕ(var_54d#0, var_54d_1#1)
+0041d354        rax_22#41 = ϕ(rax_7#10, rax_22#28)
+0041d354        rcx_3#9 = ϕ(rcx_1#1, rcx_3#3)
+0041d354        rdx_15#18 = ϕ(rdx_2#1, rdx_15#14)
+0041d354        rsi_11#15 = ϕ(rsi_6#2, rsi_11#6)
+0041d354        rdi_13#20 = ϕ(rdi_6#2, rdi_13#8)
+0041d354        r8_3#6 = ϕ(r8_1#1, r8_3#3)
+0041d354        r10_5#13 = ϕ(r10_1#1, r10_5#5)
+0041d354        size_1#6 = ϕ(r12_1#2, size_1#4)
+0041d354        cond:0_1#3 = ϕ(cond:0#0, cond:0_1#1)
+0041d354        cond:1_1#3 = ϕ(cond:1#0, cond:1_1#1)
+0041d354        mem#45 = ϕ(mem#9, mem#19)
+0041d354        rbp#1->zowner = 0 @ mem#45 -> mem#46
+0041d35e        msg#6 = rbp#1->zstream.msg @ mem#46
+0041d365        skip#5 = var_54c @ mem#46
+0041d36a        goto 173 @ 0x41d28d
+0041d29b        goto 128 @ 0x41d224
+0041d29d        result#43 = 0
+0041d29f        goto 35 @ 0x41d231
+0041d3fb        goto 252 @ 0x41d3b8
+0041d3fd        rax_14#18 = profile_header[0x80] @ mem#11
+0041d405        rdi_10#5 = rbp#1
+0041d408        var_558_1#1 = r10_3#3
+0041d40d        var_568_1#1 = rax_14#18
+0041d411        rax_15#19 = profile_header[0x81] @ mem#11
+0041d419        var_54f_1#1 = rax_15#19
+0041d41d        rax_16#20 = profile_header[0x82] @ mem#11
+0041d425        var_54e_1#1 = rax_16#20
+0041d429        rax_17#21 = profile_header[0x83] @ mem#11
+0041d431        var_54d_1#1 = rax_17#21
+0041d435        new_size#22 = zx.q(var_574_1#1)
+0041d439        rsi_10#5 = new_size#22
+0041d43c        new_size_1 @ mem#11 -> mem#12 = new_size#22
+0041d441        profile#23, mem#13 = 0x419fc0(rdi_10#5, rsi_10#5) @ mem#12
+0041d446        r10_4#4 = var_558_1#1
+0041d44b        cond:0_1#1 = profile#23 == 0
+0041d44e        var_580_3#3 = profile#23
+0041d453        if (cond:0_1#1) then 275 @ 0x41d64d else 279 @ 0x41d459
+0041d3b8        var_580_3#4 = ϕ(var_580_1#1, var_580_2#2, var_580_3#3)
+0041d3b8        var_568_1#4 = ϕ(var_568#0, var_568_1#2)
+0041d3b8        var_558_2#3 = ϕ(var_558#0, var_558_2#2)
+0041d3b8        var_54f_1#2 = ϕ(var_54f#0, var_54f_1#1)
+0041d3b8        var_54e_1#2 = ϕ(var_54e#0, var_54e_1#1)
+0041d3b8        var_54d_1#2 = ϕ(var_54d#0, var_54d_1#1)
+0041d3b8        rax_23#39 = ϕ(rax_12#16, rax_13#17, rax_23#29)
+0041d3b8        rcx_4#8 = ϕ(rcx_1#1, rcx_2#2, rcx_4#4)
+0041d3b8        rdx_16#17 = ϕ(rdx_8#7, rdx_9#8, rdx_16#15)
+0041d3b8        rsi_12#13 = ϕ(rsi_7#3, rsi_9#4, rsi_12#7)
+0041d3b8        rdi_14#18 = ϕ(rdi_7#3, rdi_9#4, rdi_14#9)
+0041d3b8        r8_3#5 = ϕ(r8_1#1, r8_2#2, r8_3#3)
+0041d3b8        r10_6#12 = ϕ(r10_2#2, r10_3#3, r10_6#6)
+0041d3b8        size_1#5 = ϕ(r12_1#2, size_1#4)
+0041d3b8        cond:0_1#2 = ϕ(cond:0#0, cond:0_1#1)
+0041d3b8        cond:1_1#2 = ϕ(cond:1#0, cond:1_1#1)
+0041d3b8        mem#42 = ϕ(mem#10, mem#11, mem#20)
+0041d3b8        rbp#1->zowner = 0 @ mem#42 -> mem#43
+0041d3c2        rsi_8#14 = var_54c @ mem#43
+0041d3c6        rdi_8#19 = rbp#1
+0041d3c9        mem#44 = 0x41a590(rdi_8#19, rsi_8#14) @ mem#43
+0041d3ce        result#40 = 0
+0041d3d0        goto 35 @ 0x41d231
+0041d64d        rbp#1->zowner = 0 @ mem#13 -> mem#14
+0041d657        skip#3 = var_54c @ mem#14
+0041d65c        msg#2 = "out of memory"
+0041d663        goto 86 @ 0x41d219
+0041d459        rax_18#24 = var_568_1#1:0.d
+0041d45d        rdx_10#9 = zx.d(var_54f_1#1)
+0041d468        rdi_11#6 = var_580_3#3
+0041d472        r8_3#3 = next_out#1
+0041d477        var_558_2#2 = r10_4#4
+0041d47c        if (false) then 285 else 287
+0041d47c        mem#15 = 0x436600(rdi_11#6 - 0x84, &new_size_1:4, 0x84) @ mem#13
+0041d47c        goto 289 @ 0x41d47e
+0041d47c        mem#16 = 0x436600(rdi_11#6, &profile_header, 0x84) @ mem#13
+0041d47c        goto 289 @ 0x41d47e
+0041d47e        mem#17 = ϕ(mem#15, mem#16)
+0041d47e        rdx_11#10 = rdx_10#9 << 0x10
+0041d481        rax_19#25 = rax_18#24 << 0x18
+0041d484        rdi_12#7 = var_580_3#3
+0041d489        rax_20#26 = rax_19#25 + rdx_11#10
+0041d48b        rdx_12#11 = zx.d(var_54d_1#1)
+0041d490        rsi_11#6 = &local_buffer
+0041d493        rcx_3#3 = rdi_12#7 + 0x84
+0041d49a        rdi_13#8 = rbp#1
+0041d49d        rax_21#27 = rax_20#26 + rdx_12#11
+0041d49f        rdx_13#12 = zx.d(var_54e_1#1)
+0041d4a4        rdx_14#13 = rdx_13#12 << 8
+0041d4a7        rax_22#28 = rax_21#27 + rdx_14#13
+0041d4a9        rdx_15#14 = &var_54c
+0041d4ac        size_1#4 = zx.q(rax_22#28 * 0xc)
+0041d4b0        size @ mem#17 -> mem#18 = size_1#4
+0041d4b5        mem#19 = 0x41cfe0(rdi_13#8, rsi_11#6, rdx_15#14, rcx_3#3, r8_3#3, nullptr) @ mem#18
+0041d4ba        cond:1_1#1 = size @ mem#19 != 0
+0041d4c0        r10_5#5 = var_558_2#2
+0041d4c5        if (cond:1_1#1) then 309 else 310 @ 0x41d4cb
+0041d4c5        goto 208 @ 0x41d354
+0041d4cb        rcx_4#4 = var_580_3#3
+0041d4d0        rdx_16#15 = var_574_1#1
+0041d4d4        rsi_12#7 = &keyword
+0041d4d7        rdi_14#9 = rbp#1
+0041d4da        var_568_1#2:0.q = r10_5#5 @ var_568_1#1
+0041d4df        rax_23#29, mem#20 = 0x408bf0(rdi_14#9, rsi_12#7, rdx_16#15, rcx_4#4) @ mem#19
+0041d4e4        r10_6#6 = var_568_1#2:0.q
+0041d4eb        if (rax_23#29 == 0) then 318 else 319 @ 0x41d4f1
+0041d4eb        goto 252 @ 0x41d3b8
+0041d4f1        rax_24#30 = new_size_1 @ mem#20
+0041d4f6        r8_4#4 = next_out#1
+0041d4fb        rsi_13#8 = &local_buffer
+0041d4fe        rdx_17#16 = &var_54c
+0041d507        rdi_15#10 = rbp#1
+0041d50a        var_568_1#3:0.q = r10_6#6 @ var_568_1#2
+0041d50f        rax_25#31 = rax_24#30 - 0x84
+0041d515        rax_26#32 = rax_25#31 - size_1#4
+0041d518        size @ mem#20 -> mem#21 = rax_26#32
+0041d51d        rax_27#33 = var_580_3#3
+0041d522        rcx_5#5 = rax_27#33 + size_1#4 + 0x84
+0041d52a        mem#22 = 0x41cfe0(rdi_15#10, rsi_13#8, rdx_17#16, rcx_5#5, r8_4#4, 1) @ mem#21
+0041d52f        skip#4 = var_54c @ mem#22
+0041d534        r10_7#7 = var_568_1#3:0.q
+0041d53c        if (skip#4 == 0) then 334 @ 0x41d61b else 335 @ 0x41d549
+0041d61b        if (size @ mem#22 == 0) then 336 else 337
+0041d549        if ((rbp#1->flags+2.b @ mem#22 & 0x10) != 0) then 338 @ 0x41d56c else 339 @ 0x41d54b
+0041d61b        goto 342 @ 0x41d58b
+0041d61b        goto 351 @ 0x41d621
+0041d56c        if (size @ mem#22 != 0) then 354 else 355 @ 0x41d579
+0041d54b        rbp#1->zowner = 0 @ mem#22 -> mem#24
+0041d555        msg#3 = "extra compressed data"
+0041d55c        goto 86 @ 0x41d219
+0041d58b        var_570_1#3 = ϕ(next_out#1, var_570_1#2)
+0041d58b        rdi_16#12 = ϕ(rdi_15#10, rdi_16#11)
+0041d58b        r10_7#9 = ϕ(r10_7#7, r10_7#8)
+0041d58b        mem#25 = ϕ(mem#22, mem#23)
+0041d58b        rsi_14#9 = skip#4
+0041d58e        rdi_17#13 = rbp#1
+0041d591        var_570_2#4 = r10_7#9
+0041d596        mem#26 = 0x41a590(rdi_17#13, rsi_14#9) @ mem#25
+0041d59e        if (rbx_1#1 == 0) then 360 else 361 @ 0x41d5a7
+0041d621        rbp#1->zowner = 0 @ mem#22 -> mem#41
+0041d62b        msg#5 = rbp#1->zstream.msg @ mem#41
+0041d632        goto 173 @ 0x41d28d
+0041d56c        goto 351 @ 0x41d621
+0041d579        rdi_16#11 = rbp#1
+0041d57c        var_570_1#2 = r10_7#7
+0041d581        mem#23 = 0x406fc0(rdi_16#11, "extra compressed data") @ mem#22
+0041d586        r10_7#8 = var_570_1#2
+0041d586        goto 342 @ 0x41d58b
+0041d59e        goto 371 @ 0x41d601
+0041d5a7        rsi_15#10 = rbx_1#1
+0041d5aa        rdi_18#14 = rbp#1
+0041d5ad        mem#27 = 0x407040(rdi_18#14, rsi_15#10, 0x10, 0) @ mem#26
+0041d5b2        rsi_16#11 = var_570_2#4
+0041d5b7        rdi_19#15 = rbp#1
+0041d5ba        rax_28#34, mem#28 = 0x40d660(rdi_19#15, rsi_16#11) @ mem#27
+0041d5bf        r10_8#10 = var_570_2#4
+0041d5c4        cond:2_1#1 = rax_28#34 == 0
+0041d5c7        rbx_1#1->iccp_name = rax_28#34 @ mem#28 -> mem#29
+0041d5cb        if (cond:2_1#1) then 381 @ 0x41d637 else 384 @ 0x41d5cd
+0041d601        rax_30#37 = ϕ(rax_27#33, rax_30#36)
+0041d601        rcx_6#7 = ϕ(rcx_5#5, rcx_6#6)
+0041d601        rsi_16#12 = ϕ(rsi_14#9, rsi_16#11)
+0041d601        rdi_20#17 = ϕ(rdi_17#13, rdi_20#16)
+0041d601        r10_8#11 = ϕ(r10_7#9, r10_8#10)
+0041d601        cond:2_1#2 = ϕ(cond:2#0, cond:2_1#1)
+0041d601        mem#39 = ϕ(mem#26, mem#38)
+0041d601        rbp#1->zowner = 0 @ mem#39 -> mem#40
+0041d60b        result#38 = 3
+0041d610        goto 35 @ 0x41d231
+0041d637        rbp#1->zowner = 0 @ mem#29 -> mem#30
+0041d641        msg#4 = "out of memory"
+0041d648        goto 128 @ 0x41d224
+0041d5cd        rdi_20#16 = rax_28#34
+0041d5d0        rax_29#35 = var_574_1#1
+0041d5d7        rcx_6#6 = r10_8#10
+0041d5da        if (false) then 388 else 390
+0041d5da        mem#31 = 0x436600(rdi_20#16 - rcx_6#6, &keyword - rcx_6#6, rcx_6#6) @ mem#29
+0041d5da        goto 392 @ 0x41d5dc
+0041d5da        mem#32 = 0x436600(rdi_20#16, &keyword, rcx_6#6) @ mem#29
+0041d5da        goto 392 @ 0x41d5dc
+0041d5dc        mem#33 = ϕ(mem#31, mem#32)
+0041d5dc        rbx_1#1->free_me = rbx_1#1->free_me @ mem#33 | 0x10 @ mem#33 -> mem#34
+0041d5e3        rbx_1#1->iccp_proflen = rax_29#35 @ mem#34 -> mem#35
+0041d5e6        rax_30#36 = var_580_3#3
+0041d5eb        rbx_1#1->valid = rbx_1#1->valid @ mem#35 | 0x1000 @ mem#35 -> mem#36
+0041d5f2        rbx_1#1->iccp_profile = rax_30#36 @ mem#36 -> mem#37
+0041d5f6        rbp#1->read_buffer = 0 @ mem#37 -> mem#38
+0041d5f6        goto 371 @ 0x41d601

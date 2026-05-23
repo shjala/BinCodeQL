@@ -1,5 +1,7 @@
 # Secrets and local config
 .env
+magma_eval/.env.eval.*
+!magma_eval/.env.eval.*.example
 
 # Extracted facts (binary-specific, regenerated per analysis)
 facts/*.facts
@@ -13,12 +15,6 @@ mlil_cache/
 # Python
 __pycache__/
 *.pyc
-
-# ADK session data
-.adk/
-
-# Binary Ninja databases
-*.bndb
 
 # IDE
 .vscode/

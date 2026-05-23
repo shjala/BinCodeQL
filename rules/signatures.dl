@@ -122,11 +122,25 @@ TaintTransfer("read", "arg1", "external").
 TaintTransfer("recv", "arg1", "external").
 TaintTransfer("recvfrom", "arg1", "external").
 TaintTransfer("fread", "arg0", "external").  // fread(buf, size, nmemb, stream)
+TaintTransfer("fread_unlocked", "arg0", "external").
 TaintTransfer("fgets", "arg0", "external").  // fgets(buf, n, stream)
 TaintTransfer("fgets", "return", "external").
+TaintTransfer("fgets_unlocked", "arg0", "external").
 TaintTransfer("gets", "arg0", "external").
 TaintTransfer("getenv", "return", "external").
 TaintTransfer("getline", "arg0", "external").
+TaintTransfer("getdelim", "arg0", "external").
+// mmap(addr, len, prot, flags, fd, offset): return is a pointer to
+// file-mapped memory, so the BUFFER pointed to by return is tainted.
+// We model this by tainting the return value; downstream loads from
+// the mapped buffer will inherit taint via alias analysis.
+TaintTransfer("mmap", "return", "external").
+TaintTransfer("mmap64", "return", "external").
+// getopt mutates the global `optarg`, which subsequent uses pick up
+// from a global pointer load. Mark the return as external — the
+// agent can spot the pattern of `getopt(...) ... read optarg`.
+TaintTransfer("getopt", "return", "external").
+TaintTransfer("getopt_long", "return", "external").
 
 // ── memset (sanitizer — clears taint in some models) ───────────────
 // memset(dst, val, n): dst ← val (usually constant, so untainted)
@@ -194,12 +208,15 @@ TaintTransfer("xmlMemRealloc",   "return", "arg0").
 .decl BufferWriteSource(func: Sym, arg_idx: Idx)
 
 BufferWriteSource("fread", 0).
+BufferWriteSource("fread_unlocked", 0).
 BufferWriteSource("read", 1).
 BufferWriteSource("recv", 1).
 BufferWriteSource("recvfrom", 1).
 BufferWriteSource("fgets", 0).
+BufferWriteSource("fgets_unlocked", 0).
 BufferWriteSource("gets", 0).
 BufferWriteSource("getline", 0).
+BufferWriteSource("getdelim", 0).
 BufferWriteSource("recvmsg", 1).
 BufferWriteSource("png_read_data", 1).
 BufferWriteSource("png_crc_read", 1).

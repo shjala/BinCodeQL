@@ -38,8 +38,8 @@
 .input TaintedVar
 
 // BnFlow is pre-computed by bn_flow.dl (shared across Bn* rules).
-.decl BnFlow(func: Sym, src_var: Sym, src_ver: Ver, dst_var: Sym, dst_ver: Ver)
-.input BnFlow
+.decl BnFlowRelevant(func: Sym, src_var: Sym, src_ver: Ver, dst_var: Sym, dst_ver: Ver)
+.input BnFlowRelevant
 
 // ── Allocator signatures: (callee, size_arg_idx) ─────────────────────
 // Kept in sync with _ALLOC_CALLEES in scripts/bn_extract_facts.py so
@@ -218,7 +218,7 @@ BnCopySite(f, ca, dv, dver, sv, sver, callee) :-
 BnAllocCopyMismatch(f, aa, ca, buf, asz, csz, af, cf,
                     "both_tainted_diff", a_origin, c_origin) :-
     BnAllocSite(f, aa, buf, bver, asz, _, af),
-    BnFlow(f, buf, bver, dv, dver),
+    BnFlowRelevant(f, buf, bver, dv, dver),
     BnCopySite(f, ca, dv, dver, csz, _, cf),
     asz != csz,
     TaintedVar(f, asz, _, a_origin, _),
@@ -228,7 +228,7 @@ BnAllocCopyMismatch(f, aa, ca, buf, asz, csz, af, cf,
 BnAllocCopyMismatch(f, aa, ca, buf, asz, csz, af, cf,
                     "untainted_alloc_tainted_copy", "none", c_origin) :-
     BnAllocSite(f, aa, buf, bver, asz, _, af),
-    BnFlow(f, buf, bver, dv, dver),
+    BnFlowRelevant(f, buf, bver, dv, dver),
     BnCopySite(f, ca, dv, dver, csz, _, cf),
     !TaintedVar(f, asz, _, _, _),
     TaintedVar(f, csz, _, c_origin, _).
@@ -250,7 +250,7 @@ BnAllocCopyMismatch(f, aa, ca, buf, asz, csz, af, cf,
 BnAllocThenUnboundedCopy(f, aa, ca, buf, asz, af, callee, origin) :-
     BnAllocSite(f, aa, buf, bver, asz, _, af),
     TaintedVar(f, asz, _, origin, _),
-    BnFlow(f, buf, bver, dv, dver),
+    BnFlowRelevant(f, buf, bver, dv, dver),
     Call(f, callee, ca),
     BnUnboundedCopyFunc(callee, dst_idx),
     ActualArg(ca, dst_idx, _, dv, dver).

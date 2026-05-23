@@ -40,9 +40,9 @@
 .decl BnSignedness(func: Sym, var: Sym, ver: Ver, sign: Sym)
 .input BnSignedness
 
-.decl BnFlow(func: Sym, src_var: Sym, src_ver: Ver,
+.decl BnFlowRelevant(func: Sym, src_var: Sym, src_ver: Ver,
              dst_var: Sym, dst_ver: Ver)
-.input BnFlow
+.input BnFlowRelevant
 
 .decl TaintedVar(func: Sym, var: Sym, ver: Ver, origin: Sym, ctx: Addr)
 .input TaintedVar
@@ -178,7 +178,7 @@ BnEffectiveGuardForArith(f, aa, v, ver) :-
 // Flow-lifted: guard on any SSA-connected version counts.
 BnEffectiveGuardForArith(f, aa, v, ver) :-
     Guard(f, ga, gv, gver, _, _, _),
-    BnFlow(f, gv, gver, v, ver),
+    BnFlowRelevant(f, gv, gver, v, ver),
     BnCFGReach(f, ga, aa).
 
 // ════════════════════════════════════════════════════════════════════
@@ -210,7 +210,7 @@ BnPotentialArithOverflow(f, aa, dst, dver, op, w) :-
 
 BnOverflowAtSink(f, aa, sa, v, callee, idx) :-
     BnPotentialArithOverflow(f, aa, v, ver, _, _),
-    BnFlow(f, v, ver, av, aver),
+    BnFlowRelevant(f, v, ver, av, aver),
     Call(f, callee, sa),
     ActualArg(sa, idx, _, av, aver),
     BnSizeSensitiveSink(callee, idx).

@@ -1,0 +1,283 @@
+// BinCodeQL — Joint offset+size bound check
+//
+// Ports NeuroLog rules/joint_buffer_bound.dl (2026-05-21 import audit).
+//
+// Detects offset-copy sinks where the offset variable AND the size
+// variable are each *separately* bounded, but no Guard combines them
+// into a joint bound. The canonical example is CVE-2023-38545 (curl
+// SOCKS hostname overflow):
+//
+//   if (plen < buffer_size - 8) { ... }     // CapacityGuard on plen
+//   if (hostnamelen > 255)        return ;  // SmallConstGuard on hostnamelen
+//   strcpy(socksreq + packetsize, hostname);// OffsetCopySink with NO joint
+//                                           //   bound on packetsize+hlen
+//
+// MLIL-SSA adaptation (vs. NeuroLog source version):
+//   • Source uses `contains("+", dst_expr)` on the textual destination
+//     argument. In SSA the destination is already a single variable;
+//     the "+" is materialized as an ArithOp("add") whose result Def
+//     becomes the call's ActualArg(0). We detect that structurally.
+//   • Source uses VarType.signedness to filter out pointer "offsets"
+//     (e.g. the buffer name itself). We use VarSign when available
+//     (DWARF-grounded ground truth) and degrade to a structural
+//     "off_var must be a non-base operand of the ArithOp" filter
+//     when VarSign is empty.
+//   • Source's CapacityGuard / SmallConstGuard use substring matching
+//     on Guard.bound. Our Guard.bound is also a Sym rendered from MLIL
+//     so the same matches apply directly.
+//   • HasJointBound is conservative: the joint guard must syntactically
+//     mention both var names in its bound string. In binary the joint
+//     bound is more often hidden behind a temp SSA var that combines
+//     off and sz via ArithOp; that form is NOT detected here. Result:
+//     this rule may over-fire on programs whose joint check is via a
+//     temp. Phase-3 backlog: emit a GuardOperand fact so HasJointBound
+//     can do a structural join instead of substring matching.
+//   • BnCapacityGuard uses a STRUCTURAL anchor (Option B): the guarded
+//     variable must itself flow into an AllocSite.size_var or a copy
+//     sink's size argument in the same function. This proves the
+//     program uses the variable as a buffer size — no string-length
+//     heuristics. The earlier NeuroLog "strlen(cap) > 3" form was
+//     rejected during the 2026-05-21 audit as a lexical proxy that
+//     doesn't survive stripped-binary SSA names.
+//
+// Consumes: Call, ActualArg, Use, Def, ArithOp, Guard, VarSign,
+//           BnAllocSite (staged from bn_alloc_copy.dl), BnFlow.
+
+// ── Types ────────────────────────────────────────────────────────────
+.type Addr <: unsigned
+.type Sym  <: symbol
+.type Ver  <: unsigned
+.type Idx  <: unsigned
+
+// ── Input facts ──────────────────────────────────────────────────────
+.decl Call(caller: Sym, callee: Sym, addr: Addr)
+.input Call
+
+.decl ActualArg(call_addr: Addr, arg_idx: Idx, param: Sym, var: Sym, ver: Ver)
+.input ActualArg
+
+.decl Use(func: Sym, var: Sym, ver: Ver, addr: Addr)
+.input Use
+
+.decl Def(func: Sym, var: Sym, ver: Ver, addr: Addr)
+.input Def
+
+.decl ArithOp(func: Sym, addr: Addr, dst: Sym, dst_ver: Ver,
+              op: Sym, src: Sym, src_ver: Ver, operand: Sym)
+.input ArithOp
+
+.decl Guard(func: Sym, addr: Addr, var: Sym, ver: Ver,
+            op: Sym, bound: Sym, bound_type: Sym)
+.input Guard
+
+.decl VarSign(func: Sym, var: Sym, ver: Ver, sign: Sym)
+.input VarSign
+
+// BnAllocSite is produced by bn_alloc_copy.dl (staged before this rule
+// runs in the pipeline). Provides (size_var, size_ver) per AllocSite —
+// the structural anchor for "this variable is a buffer-size argument".
+.decl BnAllocSite(func: Sym, call_addr: Addr, buf: Sym, buf_ver: Ver,
+                  size_var: Sym, size_ver: Ver, alloc_func: Sym)
+.input BnAllocSite
+
+.decl BnFlowRelevant(func: Sym, src_var: Sym, src_ver: Ver,
+             dst_var: Sym, dst_ver: Ver)
+.input BnFlowRelevant
+
+// ── Size-bearing sink positions ──────────────────────────────────────
+// Where the SIZE argument lives for each copy-style sink. Used to
+// anchor BnCapacityGuard: if the guarded variable flows into one of
+// these size positions, the program treats it as a buffer length.
+.decl BnSizeSinkArg(callee: Sym, idx: Idx)
+BnSizeSinkArg("memcpy",        2).
+BnSizeSinkArg("memmove",       2).
+BnSizeSinkArg("memset",        2).
+BnSizeSinkArg("memccpy",       3).
+BnSizeSinkArg("strncpy",       2).
+BnSizeSinkArg("strncat",       2).
+BnSizeSinkArg("snprintf",      1).
+BnSizeSinkArg("vsnprintf",     1).
+BnSizeSinkArg("__memcpy_chk",  2).
+BnSizeSinkArg("__memmove_chk", 2).
+BnSizeSinkArg("__memset_chk",  2).
+BnSizeSinkArg("__strncpy_chk", 2).
+BnSizeSinkArg("__snprintf_chk",1).
+BnSizeSinkArg("__builtin_memcpy",  2).
+BnSizeSinkArg("__builtin_memmove", 2).
+BnSizeSinkArg("__builtin_memset",  2).
+BnSizeSinkArg("xmlStrncat",    2).
+BnSizeSinkArg("xmlStrncpy",    2).
+BnSizeSinkArg("xmlMemcpy",     2).
+BnSizeSinkArg("xmlMemmove",    2).
+
+// ── Sinks of interest (offset-copy candidates) ───────────────────────
+.decl BnJointCopySink(callee: Sym)
+BnJointCopySink("strcpy").
+BnJointCopySink("strcat").
+BnJointCopySink("memcpy").
+BnJointCopySink("memmove").
+BnJointCopySink("strncpy").
+BnJointCopySink("strncat").
+BnJointCopySink("snprintf").
+BnJointCopySink("sprintf").
+BnJointCopySink("__builtin_memcpy").
+BnJointCopySink("__builtin_memmove").
+BnJointCopySink("xmlStrcpy").
+BnJointCopySink("xmlStrcat").
+BnJointCopySink("xmlStrncpy").
+BnJointCopySink("xmlStrncat").
+BnJointCopySink("xmlMemcpy").
+BnJointCopySink("xmlMemmove").
+
+// ── Sub-relations ────────────────────────────────────────────────────
+
+// OffsetCopySink — copy whose dst arg is the result of base+off ArithOp.
+// We surface the SSA destination, its producing ArithOp, the base
+// (left source) and the second operand (raw string from ArithOp.operand).
+// off_var is recovered separately below when the operand is an SSA name.
+.decl BnOffsetCopySink(func: Sym, addr: Addr, sink: Sym,
+                       dst_var: Sym, dst_ver: Ver,
+                       arith_addr: Addr,
+                       base_var: Sym, base_ver: Ver,
+                       off_operand: Sym)
+.output BnOffsetCopySink
+
+BnOffsetCopySink(f, ca, sink, dv, dver, aa, bv, bver, oop) :-
+    Call(f, sink, ca),
+    BnJointCopySink(sink),
+    ActualArg(ca, 0, _, dv, dver),
+    ArithOp(f, aa, dv, dver, "add", bv, bver, oop).
+
+// Recover the offset variable when ArithOp.operand is the textual name
+// of a real SSA var (i.e. there's a Def with that var name in this
+// function). This is the binary analogue of "off_var occurs inside the
+// dst expression": in SSA, the off_var IS the second operand of the
+// add.
+.decl BnOffsetVar(func: Sym, addr: Addr, sink: Sym,
+                  dst_var: Sym, dst_ver: Ver,
+                  base_var: Sym,
+                  off_var: Sym)
+BnOffsetVar(f, ca, sink, dv, dver, bv, ov) :-
+    BnOffsetCopySink(f, ca, sink, dv, dver, _, bv, _, ov),
+    Def(f, ov, _, _),
+    ov != bv,
+    ov != "0",
+    ov != "NULL".
+
+// CapacityGuard — a guard whose LEFT-hand variable is structurally
+// used as a buffer size somewhere in the same function. We bind that
+// usage via BnFlow into one of two anchors:
+//   (anchor 1) the variable flows into an AllocSite's size_var
+//              (`buf = malloc(v); ...`).
+//   (anchor 2) the variable flows into a copy/move size argument
+//              (`memcpy(dst, src, v)`).
+// Either anchor proves the program treats this variable as a buffer
+// length, so a guard on it is a real capacity guard. No string
+// heuristics — survives stripped binaries cleanly. The bound text
+// (`cap`) is kept in the output column purely for triage display.
+.decl BnCapacityGuard(func: Sym, var: Sym, cap_term: Sym)
+.output BnCapacityGuard
+
+// Anchor 1: guarded var flows into an AllocSite size argument.
+BnCapacityGuard(f, v, cap) :-
+    Guard(f, _, v, vver, _, cap, _),
+    BnFlowRelevant(f, v, vver, sv, sver),
+    BnAllocSite(f, _, _, _, sv, sver, _).
+
+// Anchor 2: guarded var flows into a copy-sink size argument.
+BnCapacityGuard(f, v, cap) :-
+    Guard(f, _, v, vver, _, cap, _),
+    BnFlowRelevant(f, v, vver, sv, sver),
+    Call(f, callee, ca),
+    BnSizeSinkArg(callee, sz_idx),
+    ActualArg(ca, sz_idx, _, sv, sver).
+
+// SmallConstGuard — a guard whose constant bound matches a known
+// protocol-field maximum or small-byte literal. Same constant table
+// as the NeuroLog source rule (covers SOCKS 8-bit, WebSocket 7-bit,
+// 16-bit, HTTP/2 frame, 24-bit). Adding more constants here doesn't
+// raise the FP ceiling because the joint-bound suppressor downstream
+// still requires no Guard combining the two vars.
+.decl BnSmallConstGuard(func: Sym, var: Sym, const_bound: Sym)
+.output BnSmallConstGuard
+
+BnSmallConstGuard(f, v, b) :-
+    Guard(f, _, v, _, _, b, "const"),
+    ( contains("255", b)   ; contains("256", b)
+    ; contains("0xff", b)  ; contains("0xFF", b) ).
+
+BnSmallConstGuard(f, v, b) :-
+    Guard(f, _, v, _, _, b, "const"),
+    ( b = "125"  ; b = "126"  ; b = "127"               // WS 7-bit
+    ; b = "65535" ; b = "65536"
+    ; b = "0xffff" ; b = "0xFFFF"                       // 16-bit
+    ; b = "16383" ; b = "16384"
+    ; b = "0x3fff" ; b = "0x3FFF"                       // HTTP/2 frame
+    ; b = "16777215" ; b = "0xffffff" ; b = "0xFFFFFF" ).// 24-bit
+
+// ── Candidate (positive) ─────────────────────────────────────────────
+.decl BnJointCandidate(func: Sym, addr: Addr, sink: Sym,
+                       dst_var: Sym, off_var: Sym, sz_var: Sym,
+                       const_bound: Sym, cap_var: Sym, cap_term: Sym)
+.output BnJointCandidate
+
+BnJointCandidate(f, ca, sink, dv, ov, sv, cb, capv, capt) :-
+    BnOffsetVar(f, ca, sink, dv, _, _, ov),
+    BnCapacityGuard(f, capv, capt),
+    BnSmallConstGuard(f, sv, cb),
+    sv != ov,
+    sv != capv,
+    // FP suppressor (1): when DWARF VarSign is present, require the
+    // offset variable to be a numeric (signed or unsigned) integer,
+    // not a pointer/struct field. Falls through gracefully when no
+    // VarSign rows for this var exist (stripped binary).
+    !BnPointerOffVar(f, ov).
+
+// Pointer/struct vars to exclude from off_var role. Only fires when
+// VarSign has explicit non-integer info — otherwise empty (no
+// suppression).
+.decl BnPointerOffVar(func: Sym, off_var: Sym)
+BnPointerOffVar(f, v) :-
+    VarSign(f, v, _, s),
+    s != "signed",
+    s != "unsigned".
+
+// ── HasJointBound (negation target) ──────────────────────────────────
+// A Guard whose bound expression syntactically mentions BOTH variable
+// names. In binary this fires when the MLIL extractor renders a
+// joint comparison with both names inline (e.g. as MLIL_SUB or
+// MLIL_ADD inside the conditional RHS). When the program combines
+// them via an intermediate temp variable, this form misses — a
+// recall gap documented at the top.
+.decl BnHasJointBound(func: Sym, off_var: Sym, sz_var: Sym)
+BnHasJointBound(f, ov, sv) :-
+    BnJointCandidate(f, _, _, _, ov, sv, _, _, _),
+    Guard(f, _, _, _, _, joint, _),
+    contains(ov, joint),
+    contains(sv, joint),
+    ov != sv.
+
+// ── Main output ──────────────────────────────────────────────────────
+.decl BnJointBufferBoundUnsafe(func: Sym, addr: Addr, sink: Sym,
+                               dst_var: Sym, off_var: Sym, sz_var: Sym,
+                               const_bound: Sym,
+                               cap_var: Sym, cap_term: Sym)
+.output BnJointBufferBoundUnsafe
+
+BnJointBufferBoundUnsafe(f, a, sk, dv, ov, sv, cb, capv, capt) :-
+    BnJointCandidate(f, a, sk, dv, ov, sv, cb, capv, capt),
+    !BnHasJointBound(f, ov, sv).
+
+// ── Compact projection: one row per (func, copy_addr, off_var) ──────
+// BnJointBufferBoundUnsafe enumerates every (sz_var, cap_var, cb, capt)
+// combination at a single copy site, which on rich functions produces
+// 100+ rows for one underlying defect. BnFinding consumes this compact
+// view so each defect contributes a single high-severity finding;
+// the full evidence cross-product remains available in the parent
+// relation for triage drilldown.
+.decl BnJointBufferBoundSite(func: Sym, addr: Addr, sink: Sym,
+                             dst_var: Sym, off_var: Sym)
+.output BnJointBufferBoundSite
+
+BnJointBufferBoundSite(f, a, sk, dv, ov) :-
+    BnJointBufferBoundUnsafe(f, a, sk, dv, ov, _, _, _, _).

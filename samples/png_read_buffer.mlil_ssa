@@ -1,0 +1,37 @@
+00419fc0        read_buffer#1 = png_ptr#0->read_buffer @ mem#0
+00419fce        if (png_ptr#0->user_chunk_malloc_max @ mem#0 u< new_size#0) then 2 @ 0x41a060 else 4 @ 0x419fd5
+0041a060        rax_4#1 = 0
+0041a062        return 0
+00419fd5        rbp#1 = new_size#0
+00419fd9        rbx#1 = png_ptr#0
+00419fe3        if (read_buffer#1 == 0) then 7 else 8 @ 0x419fec
+00419fe3        goto 9 @ 0x41a01e
+00419fec        if (png_ptr#0->read_buffer_size @ mem#0 u< new_size#0) then 16 @ 0x41a000 else 21
+0041a01e        rsi#2 = ϕ(new_size#0, rsi#1)
+0041a01e        mem#4 = ϕ(mem#0, mem#3)
+0041a01e        rsi_1#3 = rbp#1
+0041a021        rdi#1 = rbx#1
+0041a024        read_buffer_1#2, mem#5 = 0x40d660(rdi#1, rsi_1#3) @ mem#4
+0041a029        read_buffer#2 = read_buffer_1#2
+0041a02f        if (read_buffer_1#2 == 0) then 22 else 23 @ 0x41a031
+0041a000        png_ptr#0->read_buffer = 0 @ mem#0 -> mem#1
+0041a00b        rsi#1 = read_buffer#1
+0041a00e        png_ptr#0->read_buffer_size = 0 @ mem#1 -> mem#2
+0041a019        mem#3 = 0x4070c0(png_ptr#0, rsi#1) @ mem#2
+0041a019        goto 9 @ 0x41a01e
+0041a02f        goto 31 @ 0x419ff2
+0041a031        rdx#1 = rbp#1
+0041a036        rdi_1#2 = read_buffer_1#2
+0041a039        rax_2#3, mem#6 = 0x406c80(rdi_1#2, 0, rdx#1) @ mem#5
+0041a03e        rbx#1->read_buffer_size = rbp#1 @ mem#6 -> mem#7
+0041a045        rbx#1->read_buffer = rax_2#3 @ mem#7 -> mem#8
+0041a04c        r8#3 = rax_2#3
+0041a053        rax_3#4 = r8#3
+0041a058        return rax_3#4
+00419ff2        read_buffer_1#5 = ϕ(rax#0, read_buffer_1#2)
+00419ff2        rsi_1#4 = ϕ(new_size#0, rsi_1#3)
+00419ff2        rdi#3 = ϕ(png_ptr#0, rdi#1)
+00419ff2        read_buffer#4 = ϕ(read_buffer#1, read_buffer#2)
+00419ff2        mem#9 = ϕ(mem#0, mem#5)
+00419ff2        rax_1#6 = read_buffer#4
+00419ff7        return rax_1#6

@@ -1,0 +1,87 @@
+// BinCodeQL — Generic null-pointer-dereference rule
+//
+// Pattern: a function calls an allocator (malloc/calloc/realloc/...) and
+// the returned pointer is dereferenced (MemRead/MemWrite/FieldRead/Write)
+// before any guard that constrains it against 0/NULL.
+//
+// This is the binary analog of the CodeQL "missing-null-check" pattern.
+// It is INTENTIONALLY GENERIC — does not depend on libtiff/libxml2-
+// specific names — and corresponds to magma's null_deref bug class
+// (e.g. TIF009 `tif->tif_dir.td_transferfunction[i] == NULL`).
+//
+// We DON'T claim novel detection here; null-deref is a well-known
+// pattern. The contribution is binary-level coverage of the same class
+// CodeQL handles at source level.
+//
+// Run after schema.dl + bn_flow.dl is staged. Output is consumed by
+// bn_findings.dl.
+
+#include "schema.dl"
+
+// AllocReturnsTo(func, var, ver, alloc_addr):
+//   The variable (var, ver) was DEFINED at the address of an allocator
+//   call. By SSA convention, this is the variable that captures the
+//   call's return value.
+.decl AllocReturnsTo(func: Sym, var: Sym, ver: Ver, alloc_addr: Addr)
+AllocReturnsTo(f, v, ver, addr) :-
+    AllocSite(addr, f, _, _, _),
+    Def(f, v, ver, addr).
+
+// CFGReaches(func, lo, hi):
+//   Standard CFG-reachability transitive closure over CFGEdge.
+//   Used to bound "is there a guard between alloc_addr and deref_addr
+//   that lies on a path between them?"
+.decl CFGReaches(func: Sym, from_addr: Addr, to_addr: Addr)
+CFGReaches(f, a, b) :- CFGEdge(f, a, b).
+CFGReaches(f, a, c) :- CFGReaches(f, a, b), CFGEdge(f, b, c).
+
+// GuardOnVarBetween(func, var, ver, lo, hi):
+//   There exists a Guard on the SSA-versioned (var, ver) pair against
+//   a literal "0", at an address that the CFG reaches between lo and hi.
+//   Op is `==` or `!=` (the typical null-check shapes).
+.decl GuardOnVarBetween(func: Sym, var: Sym, ver: Ver, lo: Addr, hi: Addr)
+GuardOnVarBetween(f, var, ver, lo, hi) :-
+    Guard(f, gaddr, var, ver, op, "0", _),
+    (op = "==" ; op = "!="),
+    lo < gaddr, gaddr <= hi,
+    CFGReaches(f, lo, gaddr),
+    CFGReaches(f, gaddr, hi).
+
+// BnNullDeref(func, alloc_addr, deref_addr, var, deref_kind):
+//   The pointer returned by an allocator is dereferenced without a
+//   reaching null-check guard.
+.decl BnNullDeref(func: Sym, alloc_addr: Addr, deref_addr: Addr,
+                  var: Sym, deref_kind: Sym)
+.output BnNullDeref
+
+// MemRead-shaped deref
+BnNullDeref(f, aa, da, v, "memread") :-
+    AllocReturnsTo(f, v, ver, aa),
+    MemRead(f, da, v, _, _),
+    aa < da,
+    CFGReaches(f, aa, da),
+    !GuardOnVarBetween(f, v, ver, aa, da).
+
+// FieldRead-shaped deref (struct field via base pointer)
+BnNullDeref(f, aa, da, v, "fieldread") :-
+    AllocReturnsTo(f, v, ver, aa),
+    FieldRead(f, da, v, _),
+    aa < da,
+    CFGReaches(f, aa, da),
+    !GuardOnVarBetween(f, v, ver, aa, da).
+
+// FieldWrite-shaped deref
+BnNullDeref(f, aa, da, v, "fieldwrite") :-
+    AllocReturnsTo(f, v, ver, aa),
+    FieldWrite(f, da, v, _, _, _),
+    aa < da,
+    CFGReaches(f, aa, da),
+    !GuardOnVarBetween(f, v, ver, aa, da).
+
+// MemWrite-shaped deref (writes through the pointer)
+BnNullDeref(f, aa, da, v, "memwrite") :-
+    AllocReturnsTo(f, v, ver, aa),
+    MemWrite(f, da, v, _, _),
+    aa < da,
+    CFGReaches(f, aa, da),
+    !GuardOnVarBetween(f, v, ver, aa, da).

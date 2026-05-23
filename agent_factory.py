@@ -45,10 +45,12 @@ def resolve_api_key(model_name: Optional[str] = None) -> Optional[str]:
         return os.getenv("ANTHROPIC_API_KEY")
     if name.startswith("openai/"):
         return os.getenv("OPENAI_API_KEY")
-    return os.getenv("OPENAI_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
+    if name.startswith("deepseek/"):
+        return os.getenv("DEEPSEEK_API_KEY")
+    return os.getenv("OPENAI_API_KEY") or os.getenv("ANTHROPIC_API_KEY") or os.getenv("DEEPSEEK_API_KEY")
 
 
-def create_model() -> LiteLlm:
+def create_model(lite: bool = False) -> LiteLlm:
     """Build the LiteLlm model with provider-specific optimizations.
 
     For Anthropic models we enable prompt caching on the system prompt
@@ -69,6 +71,9 @@ def create_model() -> LiteLlm:
 
     Configuration is read from env vars each call:
       MODEL_NAME              — provider/model id (default Sonnet 4.6)
+      LITE_MODEL_NAME         — cheaper model for sub-agents / bootstrapping.
+                                Falls back to MODEL_NAME when unset.
+                                Pass lite=True to create_model() to use it.
       MODEL_BASE_URL          — OpenAI-compatible endpoint base URL.
                                 Set when pointing at a self-hosted
                                 inference server or a third-party OAI-
@@ -119,7 +124,8 @@ def create_model() -> LiteLlm:
                                 deepseek's internal reasoning pass:
                                 `{"chat_template_kwargs":{"thinking":false}}`
     """
-    model_name = os.getenv("MODEL_NAME", "anthropic/claude-sonnet-4-6")
+    primary = os.getenv("MODEL_NAME", "anthropic/claude-sonnet-4-6")
+    model_name = (os.getenv("LITE_MODEL_NAME") or primary) if lite else primary
     base_url = os.getenv("MODEL_BASE_URL", "").strip()
     timeout = int(os.getenv("MODEL_TIMEOUT", "180"))
     num_retries = int(os.getenv("MODEL_NUM_RETRIES", "4"))

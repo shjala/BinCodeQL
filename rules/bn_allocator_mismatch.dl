@@ -1,0 +1,102 @@
+// BinCodeQL — Allocator/deallocator family mismatch
+//
+// Ports NeuroLog rules/allocator_mismatch.dl (2026-05-21 import audit).
+//
+// Bug class: a pointer allocated by family X (e.g. xmlMalloc / libxml2)
+// is later released by family Y (e.g. free / libc). On default Unix this
+// is often silently safe, but breaks under:
+//   • custom allocator hooks (curl_global_init_mem, av_malloc redirects),
+//   • Windows DLL boundaries (each DLL has its own heap),
+//   • debug/instrumented allocators (mimalloc, jemalloc replacements).
+//
+// MLIL-SSA adaptation: NeuroLog's source version uses DefReachesUse to
+// confirm "the same allocation is what gets freed." We use BnFlow
+// (intraprocedural SSA flow, already pre-computed by bn_flow.dl). The
+// SSA Def at the alloc call_addr is the allocation's canonical identity;
+// BnFlow traces it to the ActualArg(0) at the free call.
+//
+// Precision win vs source: in source, curl's `#define free Curl_cfree`
+// macro makes the extractor see libc-`free` when the program will link
+// against `Curl_cfree`, producing spurious mismatches. In binary, after
+// linking, we see the actual called symbol — usually less ambiguous.
+//
+// Consumes: Call, ActualArg, Def, AllocFamily (user), FreeFamily (user),
+//           BnFlow (pre-computed).
+
+// ── Types ────────────────────────────────────────────────────────────
+.type Addr <: unsigned
+.type Sym  <: symbol
+.type Ver  <: unsigned
+.type Idx  <: unsigned
+
+// ── Input facts ──────────────────────────────────────────────────────
+.decl Call(caller: Sym, callee: Sym, addr: Addr)
+.input Call
+
+.decl ActualArg(call_addr: Addr, arg_idx: Idx, param: Sym, var: Sym, ver: Ver)
+.input ActualArg
+
+.decl Def(func: Sym, var: Sym, ver: Ver, addr: Addr)
+.input Def
+
+.decl AllocFamily(callee: Sym, family: Sym)
+.input AllocFamily
+
+.decl FreeFamily(callee: Sym, family: Sym)
+.input FreeFamily
+
+.decl BnFlowRelevant(func: Sym, src_var: Sym, src_ver: Ver,
+             dst_var: Sym, dst_ver: Ver)
+.input BnFlowRelevant
+
+// ── Sub-relations ────────────────────────────────────────────────────
+
+// Allocation call site whose return value is captured by an SSA Def at
+// the same address. Excludes weakly-defined defs of "0"/"NULL" (the
+// canonical no-flow sentinel sometimes emitted for failed alloc paths).
+.decl BnAllocDef(func: Sym, alloc_addr: Addr, alloc_callee: Sym,
+                 family: Sym, alloc_var: Sym, alloc_ver: Ver)
+
+BnAllocDef(f, ca, callee, fam, v, ver) :-
+    Call(f, callee, ca),
+    AllocFamily(callee, fam),
+    Def(f, v, ver, ca),
+    v != "mem",
+    v != "0",
+    v != "NULL".
+
+.output BnAllocDef
+
+// Free call site with its 0th argument (the pointer being freed).
+// Some free wrappers take the pointer at idx 1 (e.g. realloc style);
+// AllocatorMismatch focuses on the classic free(ptr) pattern. Extend
+// FreeFamily + an idx column later if needed for kfree_skb / etc.
+.decl BnFreeCall(func: Sym, free_addr: Addr, free_callee: Sym,
+                 family: Sym, ptr_var: Sym, ptr_ver: Ver)
+
+BnFreeCall(f, fa, callee, fam, v, ver) :-
+    Call(f, callee, fa),
+    FreeFamily(callee, fam),
+    ActualArg(fa, 0, _, v, ver),
+    v != "0",
+    v != "NULL".
+
+.output BnFreeCall
+
+// ── Main output ──────────────────────────────────────────────────────
+// AllocatorMismatch fires when the same SSA value defined by a family-X
+// allocator flows to a family-Y free, with X ≠ Y.
+
+.decl BnAllocatorMismatch(func: Sym,
+                          alloc_addr: Addr, alloc_callee: Sym,
+                          alloc_family: Sym, alloc_var: Sym,
+                          free_addr: Addr, free_callee: Sym,
+                          free_family: Sym)
+.output BnAllocatorMismatch
+
+BnAllocatorMismatch(f, aa, ac, afam, av, fa, fc, ffam) :-
+    BnAllocDef(f, aa, ac, afam, av, aver),
+    BnFlowRelevant(f, av, aver, fv, fver),
+    BnFreeCall(f, fa, fc, ffam, fv, fver),
+    afam != ffam,
+    fa != aa.
