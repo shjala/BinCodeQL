@@ -1,5 +1,34 @@
 # BinCodeQL
 
+> ## ⚠ Status: frozen (2026-05) — ADK-era final snapshot
+>
+> This repository is the **final Google-ADK-based snapshot** of BinCodeQL.
+> Active development continues at
+> [**`bincodeql-cli`**](https://github.com/tosanjay/bincodeql-cli) as a
+> **Claude Code / OpenClaude plugin** (MCP server + skills) — same rule
+> set, plus a Z3 path-feasibility / joint PC ∧ VC verification layer,
+> no ADK dependency, host-native chat loop. **No further updates are
+> planned here.**
+>
+> This repo is preserved as a reference for anyone still running the
+> original Google ADK-based agent, and as the historical record of the
+> Bn* rule family's development. The Datalog rules in `rules/*.dl` are
+> the same shape used in `bincodeql-cli` and reusable independently of
+> the agent harness.
+>
+> **Related repositories:**
+>
+> | Repo | Status | What for |
+> |---|---|---|
+> | [`bincodeql-cli`](https://github.com/tosanjay/bincodeql-cli) | **active** | Host-native rewrite (MCP plugin for CC / OC) |
+> | `BinCodeQL` *(this repo)* | **frozen** | Last ADK-era snapshot |
+> | [`neurolog-cli`](https://github.com/tosanjay/neurolog-cli) *(when published)* | active | Source-side sibling (tree-sitter + Souffle + Z3) |
+>
+> See `openclaude_migration_plan.md` (in this repo) for the design
+> rationale behind the move to a host-native plugin architecture.
+
+---
+
 Datalog-powered query engine for compiled binaries. An LLM agent composes [Souffle](https://souffle-lang.github.io/) Datalog queries at runtime using facts extracted from [Binary Ninja](https://binary.ninja/) via MCP or headless API.
 
 ## Motivation
